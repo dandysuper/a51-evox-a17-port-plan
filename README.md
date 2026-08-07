@@ -32,23 +32,38 @@ The public script:
 
 - runs only as a normal `crave run` build job, never in a devspace or
   `crave ssh`;
-- initializes the Evolution X manifest with `--depth 1`;
+- initializes the pinned Evolution X manifest without shallow history, so the
+  exact manifest SHA remains fetchable after `cnb` advances;
 - uses `/opt/crave/resync.sh` as documented by the Crave unsupported-ROM guide;
 - does not use `rm -rf`, `make clean`, `rm -rf out`, `--clean`, or create a
   second Android source directory;
-- builds one device target only; and
-- keeps `WITH_GMS=false` explicit before lunch.
+- builds one device target only;
+- keeps `WITH_GMS=false` explicit before lunch;
+- disables strict nounset only while loading the AOSP environment, then
+  verifies that `lunch` selected exactly `lineage_a51`; and
+- writes the build log, manifest lockfile, and host metadata under
+  `a51-build-artifacts/` so Crave can collect them.
 
 The previous job `292024` referenced a local-only copy of the script and ended
-with exit code 130 before producing source-sync output or artifacts. The public
-script in this repository supersedes that copy.
+with exit code 130, meaning it was interrupted (130 = 128 + SIGINT), before
+producing source-sync output or artifacts. The public script in this repository
+supersedes that copy.
 
 ## Running it
 
-Wait for a Crave moderator to confirm an Android 17 carrier project. After that
-approval, invoke the script from this public repository with a normal
-`crave run --no-patch` job. Pin the raw URL to a reviewed commit rather than an
-unversioned branch when submitting the actual build.
+Wait for a Crave moderator to confirm an Android 17 carrier project. When
+submitting, choose the newest approved LineageOS/A17 project and its largest
+available Linux build platform (for example, a current `linux32` box if the
+team exposes one). The worker script cannot change a project's platform; the
+project selected by `crave run` controls that. The script defaults its build
+parallelism to the worker's reported CPU count, with `BUILD_JOBS` available for
+an explicit lower value if memory pressure requires it.
+
+Invoke the script from this public repository with a normal `crave run
+--no-patch` job. Configure the project artifact patterns to collect
+`a51-build-artifacts/**` and the final files under
+`out/target/product/a51/` before submitting. Pin the raw URL to a reviewed
+commit rather than an unversioned branch when submitting the actual build.
 
 ## Safety
 

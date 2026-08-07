@@ -17,7 +17,8 @@ readonly EVO_MANIFEST_SHA="05755535e93f9e83ebccbda790ccc94102d5abec"
 readonly PUBLIC_REPO_RAW="https://raw.githubusercontent.com/dandysuper/a51-evox-a17-port-plan"
 readonly PUBLIC_REVISION="${A51_PUBLIC_REVISION:-main}"
 readonly A51_MANIFEST_URL="${PUBLIC_REPO_RAW}/${PUBLIC_REVISION}/local_manifests/a51.xml"
-readonly BUILD_JOBS="${BUILD_JOBS:-16}"
+readonly ARTIFACT_DIR="${ANDROID_ROOT}/a51-build-artifacts"
+readonly BUILD_JOBS="${BUILD_JOBS:-$(nproc --all)}"
 
 if [[ ! -d "${ANDROID_ROOT}" ]]; then
   echo "REFUSING: expected Crave Android workspace ${ANDROID_ROOT} is missing." >&2
@@ -30,7 +31,8 @@ if [[ ! -x /opt/crave/resync.sh ]]; then
 fi
 
 cd "${ANDROID_ROOT}"
-exec > >(tee -a /tmp/a51-evox-crave-build.log) 2>&1
+mkdir -p "${ARTIFACT_DIR}"
+exec > >(tee -a "${ARTIFACT_DIR}/build.log") 2>&1
 
 trap 'status=$?; echo "FAILED at line ${LINENO} (exit ${status})"; df -h "${ANDROID_ROOT}" || true; exit "${status}"' ERR
 
@@ -52,11 +54,10 @@ fi
 repo init \
   -u https://github.com/Evolution-X/manifest \
   -b cnb \
-  --git-lfs \
-  --depth 1
+  --git-lfs
 
 # Freeze the manifest revision documented by the port plan even if cnb moves.
-git -C .repo/manifests fetch --depth 1 origin "${EVO_MANIFEST_SHA}"
+git -C .repo/manifests fetch origin "${EVO_MANIFEST_SHA}"
 git -C .repo/manifests checkout --detach FETCH_HEAD
 
 mkdir -p .repo/local_manifests
@@ -68,13 +69,39 @@ mv -- .repo/local_manifests/a51.xml.download .repo/local_manifests/a51.xml
 # no manual recursive deletion.
 /opt/crave/resync.sh
 
-repo manifest -r > /tmp/a51-evolution-cnb-lock.xml
+actual_manifest_sha="$(git -C .repo/manifests rev-parse HEAD)"
+if [[ "${actual_manifest_sha}" != "${EVO_MANIFEST_SHA}" ]]; then
+  echo "REFUSING: resync.sh changed the pinned Evolution manifest." >&2
+  echo "  expected: ${EVO_MANIFEST_SHA}" >&2
+  echo "  actual:   ${actual_manifest_sha}" >&2
+  exit 67
+fi
+
+repo manifest -r > "${ARTIFACT_DIR}/lockfile.xml"
+{
+  printf 'manifest_sha=%s\n' "${actual_manifest_sha}"
+  printf 'build_jobs=%s\n' "${BUILD_JOBS}"
+  printf 'host_cores=%s\n' "$(nproc --all)"
+  date -u '+build_metadata_utc=%Y-%m-%dT%H:%M:%SZ'
+} > "${ARTIFACT_DIR}/build-metadata.txt"
 df -h "${ANDROID_ROOT}"
 
 export WITH_GMS=false
 export EVO_BUILD_TYPE=Unofficial
+
+# envsetup.sh intentionally references unset shell variables; do not let the
+# script's strict nounset mode abort before the target is selected.
+set +u
 . build/envsetup.sh
 lunch lineage_a51-cp2a-user
+set -u
+
+: "${TARGET_PRODUCT:?lunch did not set TARGET_PRODUCT}"
+if [[ "${TARGET_PRODUCT}" != "lineage_a51" ]]; then
+  echo "REFUSING: unexpected target ${TARGET_PRODUCT}; expected lineage_a51." >&2
+  exit 68
+fi
+
 m evolution -j"${BUILD_JOBS}"
 
 echo "Build command completed"
