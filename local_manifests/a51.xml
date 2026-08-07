@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Samsung Galaxy A51 (SM-A515F, exynos9611)
+  Evolution X 12.1 / Android 17 (cnb) bootstrap manifest.
+
+  Base manifest commit: 05755535e93f9e83ebccbda790ccc94102d5abec
+  All projects below use public GitHub repositories and exact revisions.
+-->
+<manifest>
+
+  <extend-project path="vendor/lineage"
+                  name="vendor_evolution"
+                  revision="e870fbc2839314c378b65342db71773fd6b55c91" />
+
+  <project path="device/samsung/a51"
+           name="Parbindar7/android_device_samsung_a51"
+           remote="github-non-los"
+           revision="b9b86945f85114ed28076602c49b83051337ff85" />
+
+  <project path="device/samsung/universal9611-common"
+           name="Parbindar7/android_device_samsung_universal9611-common"
+           remote="github-non-los"
+           revision="f2dffabd0c7600f5717dc42548b75f33a57d4626" />
+
+  <project path="kernel/samsung/universal9611"
+           name="Parbindar7/android_kernel_samsung_universal9611"
+           remote="github-non-los"
+           revision="9c4dcd26bf44c78e96885c66ba267f15b729e082" />
+
+  <project path="vendor/samsung/a51"
+           name="Parbindar7/android_vendor_samsung_a51"
+           remote="github-non-los"
+           revision="7aa200a45ebbc2705f51d9740410ba16dab40d26" />
+
+  <project path="vendor/samsung/universal9611-common"
+           name="Parbindar7/android_vendor_samsung_universal9611-common"
+           remote="github-non-los"
+           revision="b06ea9e0d14871a32de0b87ed0d4e24809751336" />
+
+  <project path="hardware/samsung_slsi-linaro/exynos"
+           name="Parbindar7/android_hardware_samsung_slsi-linaro_exynos"
+           remote="github-non-los"
+           revision="2eea770ae16ce0a726710d6a663e9de39b6aaeac" />
+
+  <project path="hardware/samsung_slsi-linaro/graphics"
+           name="LineageOS/android_hardware_samsung_slsi-linaro_graphics"
+           remote="github-non-los"
+           revision="703d69fc4c6e2f59ca2069608ea26c564c6e12a7" />
+
+  <project path="device/samsung_slsi/sepolicy"
+           name="LineageOS/android_device_samsung_slsi_sepolicy"
+           remote="github-non-los"
+           revision="ac6a195ccc08d2fbcd3580924f25e4b289ae7025" />
+
+  <project path="hardware/samsung"
+           name="LineageOS/android_hardware_samsung"
+           remote="github-non-los"
+           revision="b03c9487519e20a9040821297de51d1297e19b7b" />
+
+  <project path="hardware/samsung_slsi/libbt"
+           name="LineageOS/android_hardware_samsung_slsi_libbt"
+           remote="github-non-los"
+           revision="372d43a231237a8134b2cc4ec6659089e22f4f59" />
+
+  <project path="hardware/samsung_slsi-linaro/config"
+           name="LineageOS/android_hardware_samsung_slsi-linaro_config"
+           remote="github-non-los"
+           revision="3626ce714e847cae429883a612d4ec9de79389e7" />
+
+  <project path="hardware/samsung_slsi-linaro/exynos5"
+           name="LineageOS/android_hardware_samsung_slsi-linaro_exynos5"
+           remote="github-non-los"
+           revision="7a7c982313e0821898ef9c696d3e12da95cfe037" />
+
+  <project path="hardware/samsung_slsi-linaro/interfaces"
+           name="LineageOS/android_hardware_samsung_slsi-linaro_interfaces"
+           remote="github-non-los"
+           revision="aa39734cbeb5ea14a28c170ac7b4527942b703a0" />
+
+  <project path="hardware/samsung_slsi-linaro/openmax"
+           name="LineageOS/android_hardware_samsung_slsi-linaro_openmax"
+           remote="github-non-los"
+           revision="15ab30812af9fe39fff2ae3cd867d7e954c73881" />
+
+  <project path="hardware/samsung_slsi/scsc_wifibt/wifi_hal"
+           name="LineageOS/android_hardware_samsung_slsi_scsc_wifibt_wifi_hal"
+           remote="github-non-los"
+           revision="033d40050c5e23120a5dd0612270cb137a16b300" />
+
+  <project path="hardware/samsung_slsi/scsc_wifibt/wpa_supplicant_lib"
+           name="LineageOS/android_hardware_samsung_slsi_scsc_wifibt_wpa_supplicant_lib"
+           remote="github-non-los"
+           revision="cc50f101dff4b4480d810e13bea7bee1754cf01d" />
+
+</manifest>
