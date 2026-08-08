@@ -26,25 +26,33 @@ commits touching four files. It imposes no requirements on the device tree.
 
 ## Building
 
+Submitted as a detached remote Crave batch job. Devspace is used only for
+inspection, workspace setup and persistence — never for `repo sync`, Soong, or
+the build itself.
+
 ```bash
-caffeinate -i tmux new -s a51
-crave run --no-patch -- \
-  "curl -fsSL https://raw.githubusercontent.com/dandysuper/a51-evox-a17-port-plan/main/crave-sync-build.sh | bash"
+crave run --projectID <project> --detached --no-patch -- \
+  "curl -fsSL https://raw.githubusercontent.com/dandysuper/a51-evox-a17-port-plan/<commit>/crave-sync-build.sh | bash"
 ```
 
-Detach with `Ctrl-B` `D`. The `crave run` client must stay alive for the
-duration — a previous job (`292024`) exited 130 when the local machine
-disconnected. That was a client-side disconnect, not a build failure and not a
-moderator action. On a laptop, keep the lid open and use `caffeinate`, or drive
-the job from CI so it does not depend on your machine.
+The job runs on the Crave worker and survives the local terminal disconnecting.
+Job `292024` exited 130 because it was not detached and the submitting machine
+dropped — a client-side disconnect, not a build failure and not a moderator
+action.
 
-For a real submission, pin `A51_PUBLIC_REVISION` to a reviewed commit rather
-than `main`.
+Pin the raw URL to a reviewed commit, never `main`. A queued job fetches an
+immutable commit, so pushing new patches does not affect a job already in the
+queue; changing what a queued job runs means stopping it and submitting exactly
+one replacement.
 
-The script re-initialises the workspace onto the Evolution X `cnb` manifest, so
-the underlying Crave project's own ROM configuration does not matter. Check the
-project's `artifactPatterns` covers `*.zip` and `*.img`, or the output will not
-be collected.
+The script re-initialises the workspace onto the Evolution X `cnb` manifest and
+removes the carrier project's stale manifest state, so the underlying project's
+own ROM configuration does not matter. Job `292171` failed before compilation
+precisely because that stale state survived — `revision refs/heads/master in
+manifests not found`, then a missing `device/qcom/sepolicy_vndr/sm8650`.
+
+Check the project's `artifactPatterns` covers `*.zip` and `*.img`, or the output
+will not be collected.
 
 ## Crave compliance
 
