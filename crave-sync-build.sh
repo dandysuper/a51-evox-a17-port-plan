@@ -1,196 +1,416 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Samsung Galaxy A51 (a51 / SM-A515F / Exynos 9611)
-#  Evolution X 12.1 "cnb" = Android 17
+# A51 (SM-A515F) — Evolution X 12.1 / Android 17 — aggressive Crave build script
+# -----------------------------------------------------------------------------
+# Orchestration ported 1:1 from the successful Crave job 292073:
+#   https://raw.githubusercontent.com/snuffles198/android-builds/refs/heads/main/remote/evox-17.sh
 #
-#  Public source: https://github.com/dandysuper/a51-evox-a17-port-plan
+# Why this script is resilient (build-292073 method):
+#   1. wipe the stale carrier manifest (.repo/manifests*) before `repo init`,
+#      so a reused LOS22/CipherOS workspace cannot poison the Evolution tree
+#      (this is the exact bug that killed job 292171);
+#   2. remove pre-existing local manifests, then install ONLY the pinned A51
+#      local manifest (all 16 device/vendor/hardware/kernel projects pinned);
+#   3. deep-clean every managed project:
+#        repo forall -c "git clean -fdx ; git reset --hard HEAD"
+#   4. run /opt/crave/resync.sh twice — the second pass must fully succeed;
+#   5. Soong OOM workaround: GOMEMLIMIT/GOGC retry ladder with `rm -rf
+#      out/soong` between attempts and a 30-minute soong_build watchdog;
+#   6. check_fail() soft/hard failure classification (zip exists => softfail);
+#   7. optional Telegram/ntfy notifications that never break the build.
 #
-#  One-shot, fully automatic. Syncs, applies the device tree patches, builds.
-#  Safe to re-run: patch application is idempotent.
+# Target   : lineage_a51-cp2a-user   (vanilla, WITH_GMS=false)
+# Output   : out/target/product/a51/EvolutionX*.zip
+# Artifacts: a51-build-artifacts/{build.log,lockfile.xml,build-metadata.txt}
 #
-#  Usage (from your machine, detached):
-#      tmux new -s a51
-#      crave run --no-patch -- "curl -fsSL <raw-url-of-this-file> | bash"
-#      Ctrl-B then D
+# Submit (from the matching Crave checkout):
+#   crave run --projectID <approved-A17-project> --detached --no-patch -- \
+#     "/usr/bin/curl -fsSL -o builder.sh <raw-url-of-this-script> && \
+#      A51_PUBLIC_REVISION=<reviewed-commit> /usr/bin/bash builder.sh"
 #
-#  Run only as a normal crave run build job. Never in a devspace or crave ssh.
+# Env knobs (all optional):
+#   A51_PUBLIC_REPO_RAW / A51_PUBLIC_REVISION   source of local_manifests/a51.xml
+#   EVO_MANIFEST_SHA                            pin Evolution manifest
+#                                               (default: cnb tip, like 292073)
+#   BUILD_JOBS                                  parallelism (default: nproc --all)
+#   CRAVE_SOONG_WORKAROUND                      0/1 (default 1)
+#   ALLOW_DEVSPACE                              set to 1 to permit devspace runs
 # =============================================================================
-set -Eeo pipefail          # NOTE: deliberately NOT -u; see envsetup section
 
-# ---------------------------------------------------------------- guards ----
+set -o pipefail
+
+# --- optional secrets / environment (must never abort) ------------------------
+for _env_file in \
+  "$HOME/android-builds/dev-secrets/telegram.sh" \
+  "$HOME/android-builds/dev-secrets/secrets.sh" \
+  "$HOME/android-builds/dev-secrets/ntfy.sh" \
+  /tmp/crave_bashrc
+do
+  [[ -f "$_env_file" ]] && source "$_env_file" || true
+done
+unset _env_file
+
 if [[ "${DCDEVSPACE:-0}" == "1" || "$(pwd -P)" == /crave-devspaces* ]]; then
-  echo "REFUSING: use a normal crave run build job, not a devspace." >&2
-  exit 64
+  if [[ "${ALLOW_DEVSPACE:-0}" != "1" ]]; then
+    echo "REFUSING: run as a normal 'crave run' build job, not a devspace." >&2
+    exit 64
+  fi
+  echo "WARNING: running inside a devspace (ALLOW_DEVSPACE=1). Not a guaranteed path."
 fi
 
-readonly ANDROID_ROOT="/tmp/src/android"
-readonly EVO_MANIFEST_SHA="05755535e93f9e83ebccbda790ccc94102d5abec"
-readonly PUBLIC_REPO_RAW="https://raw.githubusercontent.com/dandysuper/a51-evox-a17-port-plan"
-readonly PUBLIC_REVISION="${A51_PUBLIC_REVISION:-main}"
-readonly BASE_URL="${PUBLIC_REPO_RAW}/${PUBLIC_REVISION}"
-readonly A51_MANIFEST_URL="${BASE_URL}/local_manifests/a51.xml"
-readonly PATCH_BASE_URL="${BASE_URL}/patches/device_samsung_a51"
-readonly LUNCH_TARGET="lineage_a51-cp2a-user"
-# FIX 4: was hardcoded 16. Workers report ~10 cores; oversubscribing with
-# RAM already tight invites OOM in metalava/soong.
-readonly BUILD_JOBS="${BUILD_JOBS:-$(nproc --all)}"
+set -u
 
-readonly PATCHES=(
-  "0001-a51-releasetools-Write-vbmeta.img-during-OTA-install.patch"
-  "0002-a51-Declare-the-super-partition-size-the-hardware-ac.patch"
-  "0003-a51-Stop-truncating-the-camera-extra_ids-list.patch"
-  "0004-a51-Drop-the-dangling-public-sepolicy-directory.patch"
-)
+# --- configuration ------------------------------------------------------------
+ANDROID_ROOT="${ANDROID_ROOT:-/tmp/src/android}"
+DEVICE="${DEVICE:-a51}"
+PACKAGE_NAME="${PACKAGE_NAME:-EvolutionX}"
+BUILD_JOBS="${BUILD_JOBS:-$(nproc --all)}"
+EVO_MANIFEST_SHA="${EVO_MANIFEST_SHA:-}"
+PUBLIC_REPO_RAW="${A51_PUBLIC_REPO_RAW:-https://raw.githubusercontent.com/dandysuper/a51-evox-a17-port-plan}"
+PUBLIC_REVISION="${A51_PUBLIC_REVISION:-main}"
+A51_MANIFEST_URL="${PUBLIC_REPO_RAW}/${PUBLIC_REVISION}/local_manifests/a51.xml"
+ARTIFACT_DIR="${ANDROID_ROOT}/a51-build-artifacts"
+export TZ="${TZ:-UTC}"
 
-[[ -d "${ANDROID_ROOT}" ]] || { echo "REFUSING: ${ANDROID_ROOT} missing." >&2; exit 65; }
-[[ -x /opt/crave/resync.sh ]] || { echo "REFUSING: /opt/crave/resync.sh unavailable." >&2; exit 66; }
-
+# --- workspace bootstrap (build-292073 technique) -----------------------------
+mkdir -p /tmp/src
+if [[ ! -d "${ANDROID_ROOT}" || -L "${ANDROID_ROOT}" ]]; then
+  if [[ "$(pwd)" != "${ANDROID_ROOT}" ]]; then
+    rm -rf "${ANDROID_ROOT}"
+    ln -s "$PWD" "${ANDROID_ROOT}"
+  fi
+fi
 cd "${ANDROID_ROOT}"
 
-# FIX 5: log and lockfile live in the workspace, not /tmp. /tmp on a worker is
-# small and ephemeral - Crave cannot collect artifacts from it.
-readonly ARTIFACT_DIR="${ANDROID_ROOT}/a51-build-artifacts"
+if [[ ! -x /opt/crave/resync.sh ]]; then
+  echo "REFUSING: /opt/crave/resync.sh is unavailable (not a Crave build worker)." >&2
+  exit 66
+fi
+
 mkdir -p "${ARTIFACT_DIR}"
 exec > >(tee -a "${ARTIFACT_DIR}/build.log") 2>&1
 
-trap 'st=$?; echo; echo "FAILED at line ${LINENO} (exit ${st})"; df -h "${ANDROID_ROOT}" || true; exit "${st}"' ERR
+SECONDS=0
 
-step() { echo; echo "=================================================="; echo ">>> $*"; echo "=================================================="; }
-
-step "Environment"
-echo "script rev : ${PUBLIC_REVISION}"
-echo "target     : ${LUNCH_TARGET}"
-echo "jobs       : ${BUILD_JOBS}"
-date -u; uname -m; nproc --all; free -h; df -h "${ANDROID_ROOT}"
-
-# ------------------------------------------------------------- preflight ----
-# FIX 2: repo init uses --depth 1 per Crave's rules, but the local manifest
-# pins 40-char SHAs. Shallow fetch of an arbitrary SHA only reliably works
-# while that SHA is still the branch tip. Rather than silently break the day
-# upstream moves, check it and say so.
-step "Preflight: are the pinned revisions still branch tips?"
-check_tip() {
-  local repo="$1" branch="$2" pinned="$3" head
-  head="$(curl -sSf "https://api.github.com/repos/${repo}/commits/${branch}" \
-          | sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1)" || return 0
-  if [[ -z "${head}" ]]; then
-    echo "  ?  ${repo}@${branch} - could not query (rate limit?), skipping"
-  elif [[ "${head}" == "${pinned}" ]]; then
-    echo "  OK ${repo}@${branch}"
-  else
-    echo "  !! ${repo}@${branch} MOVED"
-    echo "       pinned ${pinned}"
-    echo "       tip    ${head}"
-    echo "       Shallow fetch of a non-tip SHA may fail. If sync errors here,"
-    echo "       re-run with A51_NO_SHALLOW=1 to disable --depth 1."
+notify_send() {
+  local message
+  message="$* - $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  echo "[notify] ${message}"
+  if [[ -n "${TG_TOKEN:-}" && -n "${TG_CID:-}" ]]; then
+    curl -s --max-time 20 -X POST \
+      "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+      -d chat_id="${TG_CID}" -d text="${message}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${NTFYSUB:-}" ]]; then
+    curl -s --max-time 20 -d "${message}" "https://ntfy.sh/${NTFYSUB}" >/dev/null 2>&1 || true
   fi
 }
-check_tip Parbindar7/android_device_samsung_a51                  lineage-23.2 b9b86945f85114ed28076602c49b83051337ff85
-check_tip Parbindar7/android_device_samsung_universal9611-common lineage-24.0 f2dffabd0c7600f5717dc42548b75f33a57d4626
-check_tip Parbindar7/android_kernel_samsung_universal9611        lineage-24.0 9c4dcd26bf44c78e96885c66ba267f15b729e082
 
-# ------------------------------------------------------------- repo init ----
-step "repo init"
-if [[ -e .repo/local_manifests ]]; then
-  backup=".repo/local_manifests.pre-evox.$(date -u +%Y%m%dT%H%M%SZ)"
-  mv -- .repo/local_manifests "${backup}"
-  echo "preserved previous local manifests at ${backup}"
+check_fail() {
+  local status=$?
+  if [[ ${status} -ne 0 ]]; then
+    if ls out/target/product/${DEVICE}/${PACKAGE_NAME}*.zip >/dev/null 2>&1; then
+      notify_send "Build ${PACKAGE_NAME} ${DEVICE} on crave.io SOFTFAILED (zip exists)."
+      echo "softfail" > result.txt
+    else
+      notify_send "Build ${PACKAGE_NAME} ${DEVICE} on crave.io FAILED."
+      if [[ -f out/error.log && -n "${TG_TOKEN:-}" && -n "${TG_CID:-}" ]]; then
+        curl -s --max-time 30 -L -F document=@"out/error.log" \
+          -F caption="error log" -F chat_id="${TG_CID}" \
+          -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
+          >/dev/null 2>&1 || true
+      fi
+      echo "fail" > result.txt
+    fi
+    df -h "${ANDROID_ROOT}" || true
+    exit 1
+  fi
+}
+
+notify_send "A51 ${PACKAGE_NAME} Android 17 build on crave.io started (${BUILD_JOBS} jobs)."
+
+# =============================================================================
+# PHASE 1 — kill the stale carrier manifest and re-init Evolution X cnb
+# =============================================================================
+rm -rf .repo/manifests .repo/manifests.git
+repo init \
+  -u https://github.com/Evolution-X/manifest \
+  -b cnb \
+  --git-lfs --depth=1 --no-tags --no-clone-bundle
+check_fail
+
+if [[ -n "${EVO_MANIFEST_SHA}" ]]; then
+  # Best-effort pin (GitHub serves arbitrary reachable SHAs).
+  git -C .repo/manifests fetch --depth=1 origin "${EVO_MANIFEST_SHA}" || \
+    git -C .repo/manifests fetch origin "${EVO_MANIFEST_SHA}" || true
+  if git -C .repo/manifests cat-file -e "${EVO_MANIFEST_SHA}^{commit}" 2>/dev/null; then
+    git -C .repo/manifests checkout --detach "${EVO_MANIFEST_SHA}"
+    check_fail
+    echo "Pinned Evolution manifest at ${EVO_MANIFEST_SHA}"
+  else
+    echo "WARNING: pinned SHA ${EVO_MANIFEST_SHA} not fetchable; using cnb tip (292073 behaviour)."
+    EVO_MANIFEST_SHA=""
+  fi
 fi
 
-depth_args=(--depth 1)
-[[ "${A51_NO_SHALLOW:-0}" == "1" ]] && depth_args=() && echo "shallow clone DISABLED by A51_NO_SHALLOW"
-
-repo init -u https://github.com/Evolution-X/manifest -b cnb --git-lfs "${depth_args[@]}"
-
-git -C .repo/manifests fetch --depth 1 origin "${EVO_MANIFEST_SHA}"
-git -C .repo/manifests checkout --detach FETCH_HEAD
-echo "manifest pinned to ${EVO_MANIFEST_SHA}"
-
-step "Local manifest"
+# =============================================================================
+# PHASE 2 — replace stale carrier local manifests with the pinned A51 manifest
+# =============================================================================
+rm -rf .repo/local_manifests
 mkdir -p .repo/local_manifests
-curl -fsSL "${A51_MANIFEST_URL}" -o .repo/local_manifests/a51.xml.dl
-mv -- .repo/local_manifests/a51.xml.dl .repo/local_manifests/a51.xml
-grep -c '<project' .repo/local_manifests/a51.xml | xargs echo "projects declared:"
+curl -fsSL --max-time 60 "${A51_MANIFEST_URL}" -o .repo/local_manifests/a51.xml
+check_fail
+cp .repo/local_manifests/a51.xml "${ARTIFACT_DIR}/a51-local-manifest.xml"
+echo "Installed A51 local manifest from ${A51_MANIFEST_URL}"
+ls -la .repo/local_manifests/
 
-# ------------------------------------------------------------------ sync ----
-step "Sync (Crave resync.sh)"
+# =============================================================================
+# PHASE 3 — aggressive local cleanup before the first sync (292073 cleanup_self)
+# =============================================================================
+rm -rf vendor/lineage-priv
+# Stale LOS22-only sepolicy dir that broke job 292171; not part of Evolution cnb.
+rm -rf device/qcom/sepolicy_vndr/sm8650
+
+# =============================================================================
+# PHASE 4 — first Crave resync
+# =============================================================================
 /opt/crave/resync.sh
 
-# FIX 3: resync.sh may re-init or reset .repo/manifests, silently discarding
-# the pin above. That would be an invisible reproducibility failure.
-step "Verify the manifest pin survived resync"
-actual="$(git -C .repo/manifests rev-parse HEAD)"
-if [[ "${actual}" == "${EVO_MANIFEST_SHA}" ]]; then
-  echo "OK  manifest still at ${EVO_MANIFEST_SHA}"
-else
-  echo "!!  resync.sh MOVED the manifest pin"
-  echo "      expected ${EVO_MANIFEST_SHA}"
-  echo "      actual   ${actual}"
-  echo "    Build continues, but this build is NOT reproducible from the"
-  echo "    documented manifest revision. Record this in the build notes."
+# =============================================================================
+# PHASE 5 — deep clean every managed project (292073 core trick)
+# =============================================================================
+repo forall -c "git clean -fdx ; git reset --hard HEAD"
+
+# =============================================================================
+# PHASE 6 — second Crave resync; this time it MUST fully succeed
+# =============================================================================
+/opt/crave/resync.sh
+check_fail
+
+# =============================================================================
+# PHASE 7 — verify workspace and record the manifest lockfile
+# =============================================================================
+if [[ ! -f build/envsetup.sh ]]; then
+  echo "REFUSING: workspace is not an Evolution tree after resync." >&2
+  echo "fail" > result.txt
+  exit 65
 fi
 
-# --------------------------------------------------------------- patches ----
-# Idempotent: a Crave workspace persists between jobs, so a re-run must not
-# fail on already-applied patches.
-step "Applying device tree patches"
-pdir="${ANDROID_ROOT}/device/samsung/a51"
-[[ -d "${pdir}" ]] || { echo "device/samsung/a51 missing after sync" >&2; exit 67; }
-tmp_patches="$(mktemp -d)"
-applied=0; skipped=0
-for p in "${PATCHES[@]}"; do
-  curl -fsSL "${PATCH_BASE_URL}/${p}" -o "${tmp_patches}/${p}"
-  if git -C "${pdir}" apply --reverse --check "${tmp_patches}/${p}" 2>/dev/null; then
-    echo "  skip (already applied): ${p}"; skipped=$((skipped+1))
-  elif git -C "${pdir}" am --3way "${tmp_patches}/${p}"; then
-    echo "  applied: ${p}"; applied=$((applied+1))
+MANIFEST_SHA="$(git -C .repo/manifests rev-parse HEAD 2>/dev/null || echo unknown)"
+if [[ -n "${EVO_MANIFEST_SHA}" && "${MANIFEST_SHA}" != "${EVO_MANIFEST_SHA}" ]]; then
+  # resync.sh may roll the manifest repo forward; re-pin if the object still exists.
+  if git -C .repo/manifests cat-file -e "${EVO_MANIFEST_SHA}^{commit}" 2>/dev/null; then
+    git -C .repo/manifests checkout --detach "${EVO_MANIFEST_SHA}"
+    check_fail
+    MANIFEST_SHA="${EVO_MANIFEST_SHA}"
+    echo "Re-pinned Evolution manifest at ${EVO_MANIFEST_SHA}"
   else
-    git -C "${pdir}" am --abort 2>/dev/null || true
-    echo "FAILED to apply ${p}" >&2; exit 68
+    echo "WARNING: could not re-pin ${EVO_MANIFEST_SHA}; continuing at cnb tip ${MANIFEST_SHA}"
   fi
-done
-echo "patches: ${applied} applied, ${skipped} already present"
-git -C "${pdir}" log --oneline -6
+fi
 
-# -------------------------------------------------------------- lockfile ----
-step "Revision lockfile"
-repo manifest -r -o "${ARTIFACT_DIR}/lockfile.xml" \
-  && echo "lockfile.xml: $(wc -l < "${ARTIFACT_DIR}/lockfile.xml") lines" \
-  || echo "WARN: lockfile generation failed (shallow clone?)"
+repo manifest -r > "${ARTIFACT_DIR}/lockfile.xml"
+check_fail
+{
+  printf 'manifest_sha=%s\n' "${MANIFEST_SHA}"
+  printf 'device=%s\n' "${DEVICE}"
+  printf 'build_jobs=%s\n' "${BUILD_JOBS}"
+  printf 'host_cores=%s\n' "$(nproc --all)"
+  printf 'vanilla=%s\n' "true (WITH_GMS=false)"
+  date -u '+build_metadata_utc=%Y-%m-%dT%H:%M:%SZ'
+} > "${ARTIFACT_DIR}/build-metadata.txt"
 
-# ----------------------------------------------------------------- build ----
-step "envsetup + lunch"
-export WITH_GMS=false          # no default exists upstream; must be explicit
+notify_send "A51 source sync done ($(printf '%dh:%dm:%ds' $((SECONDS/3600)) $((SECONDS%3600/60)) $((SECONDS%60))))."
+df -h "${ANDROID_ROOT}"
+
+# =============================================================================
+# PHASE 7b - apply the pinned a51 device tree patches
+# =============================================================================
+# Placed AFTER both resyncs and the PHASE 5 deep clean on purpose: an earlier
+# position would be undone by `repo forall git reset --hard` or by resync.sh
+# rolling projects back to their manifest revision.
+#
+# Idempotent - a persisted workspace that already carries a patch skips it
+# rather than failing, so re-running a job is safe.
+#
+# Patches are documented in patches/device_samsung_a51/README.md. Three of the
+# four are defects in the current lineage-23.2 tree, independent of Android 17.
+A51_APPLY_PATCHES="${A51_APPLY_PATCHES:-1}"
+
+if [[ "${A51_APPLY_PATCHES}" == "1" ]]; then
+  PATCH_BASE_URL="${PUBLIC_REPO_RAW}/${PUBLIC_REVISION}/patches/device_samsung_a51"
+  A51_DEVICE_DIR="${ANDROID_ROOT}/device/samsung/a51"
+  A51_PATCHES=(
+    "0001-a51-releasetools-Write-vbmeta.img-during-OTA-install.patch"
+    "0002-a51-Declare-the-super-partition-size-the-hardware-ac.patch"
+    "0003-a51-Stop-truncating-the-camera-extra_ids-list.patch"
+    "0004-a51-Drop-the-dangling-public-sepolicy-directory.patch"
+  )
+
+  if [[ ! -d "${A51_DEVICE_DIR}" ]]; then
+    echo "REFUSING: device/samsung/a51 is missing after resync." >&2
+    echo "fail" > result.txt
+    exit 69
+  fi
+
+  PATCH_TMP="$(mktemp -d)"
+  patches_applied=0
+  patches_skipped=0
+
+  for p in "${A51_PATCHES[@]}"; do
+    if ! curl -fsSL --max-time 60 "${PATCH_BASE_URL}/${p}" -o "${PATCH_TMP}/${p}"; then
+      echo "REFUSING: could not fetch ${p} from ${PATCH_BASE_URL}" >&2
+      echo "fail" > result.txt
+      exit 70
+    fi
+    if git -C "${A51_DEVICE_DIR}" apply --reverse --check "${PATCH_TMP}/${p}" 2>/dev/null; then
+      echo "  skip (already applied): ${p}"
+      patches_skipped=$((patches_skipped + 1))
+    elif git -C "${A51_DEVICE_DIR}" am --3way "${PATCH_TMP}/${p}"; then
+      echo "  applied: ${p}"
+      patches_applied=$((patches_applied + 1))
+    else
+      git -C "${A51_DEVICE_DIR}" am --abort 2>/dev/null || true
+      echo "REFUSING: failed to apply ${p}" >&2
+      echo "fail" > result.txt
+      exit 71
+    fi
+  done
+
+  echo "Device tree patches: ${patches_applied} applied, ${patches_skipped} already present"
+  git -C "${A51_DEVICE_DIR}" log --oneline -6
+  cp -f "${PATCH_TMP}"/*.patch "${ARTIFACT_DIR}/" 2>/dev/null || true
+  {
+    printf 'device_tree_patches_applied=%s\n' "${patches_applied}"
+    printf 'device_tree_patches_skipped=%s\n' "${patches_skipped}"
+    printf 'device_tree_patch_source=%s\n' "${PATCH_BASE_URL}"
+  } >> "${ARTIFACT_DIR}/build-metadata.txt"
+  rm -rf "${PATCH_TMP}"
+  notify_send "A51 device tree patches applied (${patches_applied} new, ${patches_skipped} present)."
+else
+  echo "Device tree patches SKIPPED (A51_APPLY_PATCHES=0)"
+fi
+
+
+# =============================================================================
+# PHASE 8 — product configuration BEFORE lunch, then select the A51 target
+# =============================================================================
+export WITH_GMS=false
 export EVO_BUILD_TYPE=Unofficial
+export BUILD_USERNAME=user
+export BUILD_HOSTNAME=localhost
+export KBUILD_BUILD_USER=user
+export KBUILD_BUILD_HOST=localhost
 
-# FIX 1: build/envsetup.sh references unset variables throughout and aborts
-# under nounset. This was the guaranteed failure in the previous revision.
+# envsetup.sh and lunch legitimately reference unset shell variables.
 set +u
-# shellcheck disable=SC1091
 source build/envsetup.sh
-lunch "${LUNCH_TARGET}"
-set -u
+check_fail
+source build/envsetup.sh
+lunch lineage_a51-cp2a-user
+check_fail
 
-[[ -n "${TARGET_PRODUCT:-}" ]] || { echo "lunch did not set TARGET_PRODUCT" >&2; exit 69; }
-[[ "${TARGET_PRODUCT}" == "lineage_a51" ]] || { echo "WRONG TARGET: ${TARGET_PRODUCT}" >&2; exit 70; }
-echo "TARGET_PRODUCT=${TARGET_PRODUCT}  WITH_GMS=${WITH_GMS}  EVO_BUILD_TYPE=${EVO_BUILD_TYPE}"
+TARGET_PRODUCT_ACTUAL="${TARGET_PRODUCT:-}"
+if [[ "${TARGET_PRODUCT_ACTUAL}" != "lineage_a51" ]]; then
+  echo "REFUSING: unexpected target '${TARGET_PRODUCT_ACTUAL}'; expected lineage_a51." >&2
+  echo "fail" > result.txt
+  exit 68
+fi
+echo "Lunched ${TARGET_PRODUCT_ACTUAL}-cp2a-${TARGET_BUILD_VARIANT:-user}"
 
-step "Build"
-m evolution -j"${BUILD_JOBS}"
+# nounset stays OFF from here on — identical to build 292073.
 
-# ------------------------------------------------------------- artifacts ----
-step "Artifacts"
-OUT="out/target/product/a51"
-ls -lh "${OUT}"/*.zip 2>/dev/null || echo "no zip in ${OUT}"
-for i in boot recovery dtbo vbmeta super; do
-  [[ -f "${OUT}/${i}.img" ]] && printf "  %-9s %14s bytes\n" "${i}" "$(stat -c%s "${OUT}/${i}.img")"
-done
-cp -f "${OUT}"/*.zip "${ARTIFACT_DIR}/" 2>/dev/null || true
+# =============================================================================
+# PHASE 9 — wipe stale outputs, then run the Soong OOM retry ladder (292073)
+# =============================================================================
+mka installclean
+check_fail
 
-step "Partition audit"
-echo "Physical super on SM-A515F is 6382682112 bytes."
-echo "Patch 0002 overrides the common tree's 6836715520 declaration."
-echo "boot <= 61865984 | recovery <= 71106560 | dtbo <= 8388608"
+CRAVE_SOONG_WORKAROUND="${CRAVE_SOONG_WORKAROUND:-1}"
+if [[ "${CRAVE_SOONG_WORKAROUND}" == "1" ]]; then
+  do_soong() {
+    ( sleep 1800; pkill -9 -e soong_build || true ) &
+    local sleep_pid=$!
+    notify_send "Soong attempt in progress."
+    if m nothing; then
+      kill "${sleep_pid}" 2>/dev/null || true
+      notify_send "Soong succeeded."
+      return 0
+    fi
+    kill "${sleep_pid}" 2>/dev/null || true
+    notify_send "Soong failed."
+    return 1
+  }
 
-step "DONE"
-date -u; df -h "${ANDROID_ROOT}"
+  export GOMEMLIMIT=52GiB GOGC=20 GODEBUG="gctrace=1"
+  notify_send "Soong ladder phase 1 (baseline)."
+  do_soong || do_soong || do_soong || do_soong
+  unset GOMEMLIMIT GOGC GODEBUG
+  rm -rf out/soong
+
+  export GOMEMLIMIT=52GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=12
+  notify_send "Soong ladder phase 2 (12 procs)."
+  do_soong || do_soong || do_soong || do_soong
+  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
+  rm -rf out/soong
+
+  export GOMEMLIMIT=52GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=8
+  notify_send "Soong ladder phase 3 (8 procs)."
+  do_soong || do_soong || do_soong || do_soong
+  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
+  rm -rf out/soong
+
+  export GOMEMLIMIT=45GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=12
+  notify_send "Soong ladder phase 4 (45GiB/12 procs)."
+  do_soong || do_soong || do_soong || do_soong
+  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
+  rm -rf out/soong
+
+  export GOMEMLIMIT=52GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=4
+  notify_send "Soong ladder phase 5 (4 procs)."
+  do_soong || do_soong || do_soong || do_soong
+  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
+  rm -rf out/soong
+
+  export GOMEMLIMIT=52GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=2
+  notify_send "Soong ladder phase 6 (2 procs)."
+  do_soong || do_soong || do_soong || do_soong
+  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
+  rm -rf out/soong
+
+  export GOMEMLIMIT=45GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=6
+  notify_send "Soong ladder phase 7 (45GiB/6 procs)."
+  do_soong || do_soong || do_soong || do_soong
+  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
+  rm -rf out/soong
+
+  notify_send "Soong ladder finished."
+  unset do_soong
+fi
+
+# =============================================================================
+# PHASE 10 — the real build (292073 build command, adapted to a51)
+# =============================================================================
+PRODUCT_OTA_ENFORCE_VINTF_KERNEL_REQUIREMENTS=false m evolution -j"${BUILD_JOBS}"
+check_fail
+
+# =============================================================================
+# PHASE 11 — success handling and artifact collection
+# =============================================================================
+echo "success" > result.txt
+notify_send "A51 ${PACKAGE_NAME} build on crave.io SUCCEEDED."
+
+shopt -s nullglob
+zip_files=( out/target/product/${DEVICE}/${PACKAGE_NAME}*.zip )
+if (( ${#zip_files[@]} > 0 )); then
+  ls -lh "${zip_files[@]}"
+  cp "${zip_files[@]}" "${ARTIFACT_DIR}/"
+fi
+shopt -u nullglob
+
+BUILD_TIME=$(printf '%dh:%dm:%ds' $((SECONDS/3600)) $((SECONDS%3600/60)) $((SECONDS%60)))
+notify_send "A51 build completed. ${BUILD_TIME}."
+date -u
+df -h "${ANDROID_ROOT}"
+echo "ALL DONE"
+exit 0
