@@ -1,0 +1,28 @@
+From ca806c7145ac348ec24a678638ee8a92045ac81a Mon Sep 17 00:00:00 2001
+From: dandysuper <a@b.c>
+Date: Sat, 8 Aug 2026 20:33:07 +0500
+Subject: [PATCH] a51: releasetools: Write vbmeta.img during OTA install
+
+BoardConfig.mk sets TARGET_RELEASETOOLS_EXTENSIONS to the device
+releasetools, which masks universal9611-common's extension. The common
+extension installs both dtbo.img and vbmeta.img; this one installed only
+dtbo.img, so generated OTA packages never wrote vbmeta at all.
+
+Devices flashed from a stock vbmeta would keep it across every OTA.
+---
+ releasetools/releasetools.py | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/releasetools/releasetools.py b/releasetools/releasetools.py
+index 64027ca..0e91b0f 100644
+--- a/releasetools/releasetools.py
++++ b/releasetools/releasetools.py
+@@ -54,4 +54,5 @@ def OTA_Assertions(info):
+ 
+ def OTA_InstallEnd(info):
+   AddImage(info, "IMAGES", "dtbo.img", "/dev/block/by-name/dtbo")
++  AddImage(info, "IMAGES", "vbmeta.img", "/dev/block/by-name/vbmeta")
+   return
+-- 
+2.49.0
+
