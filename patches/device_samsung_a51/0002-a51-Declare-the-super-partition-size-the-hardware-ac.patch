@@ -1,0 +1,38 @@
+From a64456a22ee0f610b92c2cf8c0d725df3a8ed745 Mon Sep 17 00:00:00 2001
+From: dandysuper <a@b.c>
+Date: Sat, 8 Aug 2026 20:33:07 +0500
+Subject: [PATCH] a51: Declare the super partition size the hardware actually
+ has
+
+BoardConfigCommon.mk declares BOARD_SUPER_PARTITION_SIZE 6836715520 and
+BOARD_SAMSUNG_DYNAMIC_PARTITIONS_SIZE 6832521216. lpdump on a retail
+SM-A515F reports a physical super of 6382682112 bytes - 454033408 bytes
+smaller than declared.
+
+lpmake will happily emit a super image sized to the declared value, which
+then cannot be flashed. Override with the measured geometry, leaving 4MiB
+for metadata.
+---
+ BoardConfig.mk | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/BoardConfig.mk b/BoardConfig.mk
+index 1a52eb7..5e7f448 100644
+--- a/BoardConfig.mk
++++ b/BoardConfig.mk
+@@ -18,6 +18,12 @@ DEVICE_PATH := device/samsung/a51
+ 
+ # Inherit from the common tree
+ include device/samsung/universal9611-common/BoardConfigCommon.mk
++
++# Dynamic partitions - override the common values, which describe a super
++# partition 454033408 bytes larger than SM-A515F hardware actually has.
++# Measured on-device: lpdump reports super = 6382682112 bytes.
++BOARD_SUPER_PARTITION_SIZE := 6382682112
++BOARD_SAMSUNG_DYNAMIC_PARTITIONS_SIZE := 6378487808
+ # Inherit optional vendor BoardConfig
+ -include vendor/samsung/a51/BoardConfigVendor.mk
+ 
+-- 
+2.49.0
+
