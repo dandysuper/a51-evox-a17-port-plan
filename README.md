@@ -1,94 +1,84 @@
-# Samsung Galaxy A51 Evolution X 12.1 / Android 17 Port
+# Samsung Galaxy A51 — Evolution X 12.1 / Android 17
 
-Public research, planning, and Crave build-bootstrap files for an unofficial
-Evolution X 12.1 (Android 17) forward-port to the Samsung Galaxy A51 4G
-(`SM-A515F`, `a51`).
+Public research, patches, and build bootstrap for an unofficial Evolution X 12.1
+(Android 17) forward-port to the Galaxy A51 4G (`SM-A515F`, `a51`, Exynos 9611).
 
-## Current status
+## Status
 
-The port remains experimental and has not produced a verified bootable build.
-The Crave build script is published here so moderators and other contributors
-can inspect it. **Do not queue it yet:** an approved Android 17 Crave carrier
-project has not been identified.
+Experimental. No verified bootable build yet.
 
-Crave project 82 is named PixelOS, but its public `seventeen` manifest currently
-selects AOSP `android-16.0.0_r4`, PixelOS `sixteen-qpr2`, and LineageOS
-`lineage-23.2`. Evolution X `cnb` selects AOSP `android-17.0.0_r1` and LineageOS
-`lineage-24.0`, so project 82 is not presently a verified same-generation
-carrier.
+As of August 2026 no device tree for **any** Exynos 9611 device — a51, m21, m31,
+m31s, f41 — exists on an Android 17 branch. The common tree and kernel do:
+`universal9611-common` and `kernel_samsung_universal9611` both carry
+`lineage-24.0`, and the kernel has real Android 17 work in it (a bpf-5.10
+backport, cgroup v2 freezer, the SchedTune-to-uclamp migration). The
+device-specific layer is unstarted, which is what this repository is for.
+
+The `lineage-24.0` common tree is a fast-forward of `lineage-23.2` plus five
+commits touching four files. It imposes no requirements on the device tree.
 
 ## Files
 
-- [Detailed port plan](A51_EVOX_A17_PORT_PLAN_v2.md)
-- [Open Crave build script](crave-sync-build.sh)
-- [Pinned A51 local manifest](local_manifests/a51.xml)
+- [Port plan](A51_EVOX_A17_PORT_PLAN_v2.md) — research and phased implementation plan
+- [Build script](crave-sync-build.sh) — syncs, patches, builds; one command
+- [Local manifest](local_manifests/a51.xml) — pinned, public sources only
+- [Device tree patches](patches/device_samsung_a51/) — four patches with rationale
 
-The local manifest contains public GitHub sources only. It does not contain
-proprietary firmware, credentials, signing keys, or private repository URLs.
+## Building
 
-## Crave policy notes
+```bash
+caffeinate -i tmux new -s a51
+crave run --no-patch -- \
+  "curl -fsSL https://raw.githubusercontent.com/dandysuper/a51-evox-a17-port-plan/main/crave-sync-build.sh | bash"
+```
 
-The script is an aggressive, resilient port of the orchestration that produced
-the successful Crave job
-[`292073`](https://foss.crave.io/app/#/build/info/292073?team=14) (Xiaomi
-`chime` Evolution X 17, `snuffles198/android-builds` `remote/evox-17.sh`),
-adapted to the Samsung Galaxy A51 (`lineage_a51`). Build-292073 techniques
-preserved:
+Detach with `Ctrl-B` `D`. The `crave run` client must stay alive for the
+duration — a previous job (`292024`) exited 130 when the local machine
+disconnected. That was a client-side disconnect, not a build failure and not a
+moderator action. On a laptop, keep the lid open and use `caffeinate`, or drive
+the job from CI so it does not depend on your machine.
 
-- **stale-manifest wipe** — `.repo/manifests*` is removed before `repo init`,
-  so a reused LOS22/CipherOS/PixelOS carrier workspace cannot poison the
-  Evolution tree (this is exactly what broke job `292171`);
-- **double Crave resync** — `/opt/crave/resync.sh` runs twice; the second pass
-  must fully succeed and is gated by `check_fail`;
-- **whole-tree deep clean** — `repo forall -c "git clean -fdx ; git reset
-  --hard HEAD"` between the two resyncs;
-- **Soong OOM retry ladder** — `GOMEMLIMIT`/`GOGC`/`GOMAXPROCS` tiers with
-  `rm -rf out/soong` between attempts and a 30-minute `soong_build` watchdog,
-  followed by the real `m evolution` build;
-- **soft-fail vs hard-fail classification** — `check_fail` reports `softfail`
-  if a zip already exists, otherwise `fail`, and never uses private signing
-  keys (this port performs no signing/download/OTA publishing).
+For a real submission, pin `A51_PUBLIC_REVISION` to a reviewed commit rather
+than `main`.
 
-This port deliberately keeps a single pinned local manifest
-(`local_manifests/a51.xml`, 16 projects pinned by exact SHA) and stays vanilla:
-`WITH_GMS=false` is exported before lunch because the pinned Evolution vendor
-has **no default** for `WITH_GMS`.
+The script re-initialises the workspace onto the Evolution X `cnb` manifest, so
+the underlying Crave project's own ROM configuration does not matter. Check the
+project's `artifactPatterns` covers `*.zip` and `*.img`, or the output will not
+be collected.
 
-The script still:
+## Crave compliance
 
-- runs only as a normal `crave run` build job unless `ALLOW_DEVSPACE=1`;
-- uses `/opt/crave/resync.sh` as documented by the Crave unsupported-ROM guide;
-- builds one device target only, then asserts `TARGET_PRODUCT == lineage_a51`;
-- writes the build log, manifest lockfile, local-manifest copy, and host
-  metadata under `a51-build-artifacts/` so Crave can collect them.
+- runs only as a normal `crave run` job, never in a devspace or `crave ssh`
+- `/opt/crave/resync.sh` for syncing; never a bare `repo sync`
+- `repo init --depth 1`, with a preflight that warns if a pinned SHA is no
+  longer its branch tip
+- no `rm -rf`, no `make clean`, no `--clean`, no second source directory
+- one device target
+- `WITH_GMS=false` set explicitly — there is no upstream default
+- public GitHub sources only; no credentials, keys, or private repositories
+- patch application is idempotent, so re-runs do not need a clean tree
 
-Job history: `292024` ended with exit 130 (interrupted) before sync output;
-`292171` failed because the reused LOS22 workspace retained its old project set
-and `resync.sh` continued after the manifest-sync error. The current script
-removes stale carrier manifests and local manifests *before* init/sync, so a
-dirty workspace is rebuilt in place instead of being carried forward.
+## Patches
 
-## Running it
+Four patches against `device/samsung/a51` at `b9b86945`. Three are defects in
+the current `lineage-23.2` tree, independent of the Android 17 port:
 
-Wait for a Crave moderator to confirm an Android 17 carrier project. When
-submitting, choose the newest approved LineageOS/A17 project and its largest
-available Linux build platform (for example, a current `linux32` box if the
-team exposes one). The worker script cannot change a project's platform; the
-project selected by `crave run` controls that. The script defaults its build
-parallelism to the worker's reported CPU count, with `BUILD_JOBS` available for
-an explicit lower value if memory pressure requires it.
+| | |
+|---|---|
+| 0001 | OTAs never wrote `vbmeta.img` — the device releasetools masked the common one |
+| 0002 | Declared super partition is 454 MB larger than SM-A515F hardware |
+| 0003 | `soong_config_set` silently truncated the camera ID list to a single entry |
+| 0004 | Dangling reference to a deleted public sepolicy directory |
 
-Invoke the script from this public repository with a normal `crave run
---no-patch` job. Configure the project artifact patterns to collect
-`a51-build-artifacts/**` and the final files under
-`out/target/product/a51/` before submitting. Pin the raw URL to a reviewed
-commit rather than an unversioned branch when submitting the actual build.
+Rationale, line numbers, and the open questions the patches do *not* address are
+in [patches/device_samsung_a51/README.md](patches/device_samsung_a51/README.md).
 
 ## Safety
 
-Samsung bootloader unlocking wipes user data and permanently trips Knox.
-Flashing unverified images can cause data loss or an unbootable device. Use a
-test SM-A515F, preserve its own EFS/cpefs backups privately, and maintain a
-verified same-or-newer-bootloader Odin recovery package. A successful compile
-is not permission to flash: partition sizing, AVB, recovery, and boot-chain
-gates in the plan must be completed first.
+Unlocking a Samsung bootloader wipes user data and permanently trips Knox.
+Flashing unverified images can leave a device unbootable. Use a test SM-A515F,
+keep its EFS/cpefs backups private, and have a verified Odin package at the same
+or newer bootloader before flashing anything.
+
+A successful compile is not permission to flash. The partition sizing, AVB,
+recovery, and boot-chain gates in the port plan come first.
