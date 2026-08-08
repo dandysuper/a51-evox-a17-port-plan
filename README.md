@@ -28,26 +28,45 @@ proprietary firmware, credentials, signing keys, or private repository URLs.
 
 ## Crave policy notes
 
-The public script:
+The script is an aggressive, resilient port of the orchestration that produced
+the successful Crave job
+[`292073`](https://foss.crave.io/app/#/build/info/292073?team=14) (Xiaomi
+`chime` Evolution X 17, `snuffles198/android-builds` `remote/evox-17.sh`),
+adapted to the Samsung Galaxy A51 (`lineage_a51`). Build-292073 techniques
+preserved:
 
-- runs only as a normal `crave run` build job, never in a devspace or
-  `crave ssh`;
-- initializes the pinned Evolution X manifest without shallow history, so the
-  exact manifest SHA remains fetchable after `cnb` advances;
+- **stale-manifest wipe** — `.repo/manifests*` is removed before `repo init`,
+  so a reused LOS22/CipherOS/PixelOS carrier workspace cannot poison the
+  Evolution tree (this is exactly what broke job `292171`);
+- **double Crave resync** — `/opt/crave/resync.sh` runs twice; the second pass
+  must fully succeed and is gated by `check_fail`;
+- **whole-tree deep clean** — `repo forall -c "git clean -fdx ; git reset
+  --hard HEAD"` between the two resyncs;
+- **Soong OOM retry ladder** — `GOMEMLIMIT`/`GOGC`/`GOMAXPROCS` tiers with
+  `rm -rf out/soong` between attempts and a 30-minute `soong_build` watchdog,
+  followed by the real `m evolution` build;
+- **soft-fail vs hard-fail classification** — `check_fail` reports `softfail`
+  if a zip already exists, otherwise `fail`, and never uses private signing
+  keys (this port performs no signing/download/OTA publishing).
+
+This port deliberately keeps a single pinned local manifest
+(`local_manifests/a51.xml`, 16 projects pinned by exact SHA) and stays vanilla:
+`WITH_GMS=false` is exported before lunch because the pinned Evolution vendor
+has **no default** for `WITH_GMS`.
+
+The script still:
+
+- runs only as a normal `crave run` build job unless `ALLOW_DEVSPACE=1`;
 - uses `/opt/crave/resync.sh` as documented by the Crave unsupported-ROM guide;
-- does not use `rm -rf`, `make clean`, `rm -rf out`, `--clean`, or create a
-  second Android source directory;
-- builds one device target only;
-- keeps `WITH_GMS=false` explicit before lunch;
-- disables strict nounset only while loading the AOSP environment, then
-  verifies that `lunch` selected exactly `lineage_a51`; and
-- writes the build log, manifest lockfile, and host metadata under
-  `a51-build-artifacts/` so Crave can collect them.
+- builds one device target only, then asserts `TARGET_PRODUCT == lineage_a51`;
+- writes the build log, manifest lockfile, local-manifest copy, and host
+  metadata under `a51-build-artifacts/` so Crave can collect them.
 
-The previous job `292024` referenced a local-only copy of the script and ended
-with exit code 130, meaning it was interrupted (130 = 128 + SIGINT), before
-producing source-sync output or artifacts. The public script in this repository
-supersedes that copy.
+Job history: `292024` ended with exit 130 (interrupted) before sync output;
+`292171` failed because the reused LOS22 workspace retained its old project set
+and `resync.sh` continued after the manifest-sync error. The current script
+removes stale carrier manifests and local manifests *before* init/sync, so a
+dirty workspace is rebuilt in place instead of being carried forward.
 
 ## Running it
 
