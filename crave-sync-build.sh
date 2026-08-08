@@ -13,7 +13,8 @@
 #      local manifest (all 16 device/vendor/hardware/kernel projects pinned);
 #   3. deep-clean every managed project:
 #        repo forall -c "git clean -fdx ; git reset --hard HEAD"
-#   4. run /opt/crave/resync.sh twice — the second pass must fully succeed;
+#   4. run resync twice via resync_with_pruning(), which retries and prunes
+#      obsolete carrier projects repo cannot remove; second pass must succeed;
 #   5. Soong OOM workaround: GOMEMLIMIT/GOGC retry ladder with `rm -rf
 #      out/soong` between attempts and a 30-minute soong_build watchdog;
 #   6. check_fail() soft/hard failure classification (zip exists => softfail);
@@ -171,10 +172,64 @@ rm -rf vendor/lineage-priv
 # Stale LOS22-only sepolicy dir that broke job 292171; not part of Evolution cnb.
 rm -rf device/qcom/sepolicy_vndr/sm8650
 
+
+# Obsolete carrier prebuilts. repo refuses to delete a project that has
+# uncommitted changes, which aborts "Updating local project lists" and fails
+# the entire sync - this is what killed job 292268 after 20 minutes.
+rm -rf prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
+rm -rf prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+
+# -----------------------------------------------------------------------------
+# resync_with_pruning - /opt/crave/resync.sh, but self-healing.
+#
+# When the workspace was last synced against a different carrier manifest, repo
+# has to remove projects the new manifest does not contain. Any of those with a
+# dirty working tree makes repo abort the whole sync:
+#
+#   error: <path>: Cannot remove project: uncommitted changes are present.
+#
+# resync.sh clears exactly one such project per invocation, so a workspace with
+# several of them can never converge in a fixed number of passes. This retries,
+# pruning every blocked project reported on each failed attempt.
+#
+# Only removes projects the incoming manifest does not want, and returns
+# immediately if the failure is anything a prune cannot fix - so a genuine sync
+# error is never masked.
+# -----------------------------------------------------------------------------
+resync_with_pruning() {
+  local attempt=1 max="${RESYNC_MAX_ATTEMPTS:-8}" out rc
+  local -a blocked
+  while (( attempt <= max )); do
+    echo "--- resync attempt ${attempt}/${max} ---"
+    if out="$(/opt/crave/resync.sh 2>&1)"; then
+      printf '%s\n' "${out}"
+      echo "--- resync succeeded on attempt ${attempt} ---"
+      return 0
+    fi
+    rc=$?
+    printf '%s\n' "${out}"
+    mapfile -t blocked < <(printf '%s\n' "${out}" \
+      | sed -n 's/^error: \(.*\): Cannot remove project.*/\1/p' | sort -u)
+    if (( ${#blocked[@]} == 0 )); then
+      echo "resync failed (rc=${rc}) for a reason pruning cannot fix." >&2
+      return "${rc}"
+    fi
+    for b in "${blocked[@]}"; do
+      if [[ -n "${b}" && -d "${b}" ]]; then
+        echo "pruning stale carrier project: ${b}"
+        rm -rf "${b}"
+      fi
+    done
+    attempt=$(( attempt + 1 ))
+  done
+  echo "resync still failing after ${max} attempts." >&2
+  return 1
+}
+
 # =============================================================================
 # PHASE 4 — first Crave resync
 # =============================================================================
-/opt/crave/resync.sh
+resync_with_pruning
 
 # =============================================================================
 # PHASE 5 — deep clean every managed project (292073 core trick)
@@ -184,7 +239,7 @@ repo forall -c "git clean -fdx ; git reset --hard HEAD"
 # =============================================================================
 # PHASE 6 — second Crave resync; this time it MUST fully succeed
 # =============================================================================
-/opt/crave/resync.sh
+resync_with_pruning
 check_fail
 
 # =============================================================================
