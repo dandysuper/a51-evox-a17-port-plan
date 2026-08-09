@@ -400,6 +400,13 @@ export BUILD_HOSTNAME=localhost
 export KBUILD_BUILD_USER=user
 export KBUILD_BUILD_HOST=localhost
 
+# Downgrade "required module not found" from a hard failure to a warning.
+# The vendor trees are lineage-23.2 while the common tree is lineage-24.0, so
+# some PRODUCT_PACKAGES entries may reference modules the blobs do not
+# provide. Without this the first such entry stops the build; with it, the
+# build completes and lists them.
+export BUILD_BROKEN_MISSING_REQUIRED_MODULES=true
+
 # envsetup.sh and lunch legitimately reference unset shell variables.
 set +u
 source build/envsetup.sh
