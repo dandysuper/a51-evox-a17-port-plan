@@ -1,0 +1,33 @@
+From e2769226dcebbd793f714e3c1311786040655d0b Mon Sep 17 00:00:00 2001
+From: dandysuper <a@b.c>
+Date: Sun, 9 Aug 2026 16:40:15 +0500
+Subject: [PATCH] a51: Disable kernel LTO
+
+HOLD. Apply only if the kernel fails during link, or if lld errors or hangs.
+
+kernel.mk:317-341 accepts none/thin/full. ThinLTO against a 4.14 tree with a
+modern lld is a known source of link failures and of very long link times on
+a shared build queue.
+
+Turning it off costs some runtime performance and buys build reliability,
+which is the right trade during bring-up.
+---
+ BoardConfig.mk | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/BoardConfig.mk b/BoardConfig.mk
+index 74b76dc..953d56d 100644
+--- a/BoardConfig.mk
++++ b/BoardConfig.mk
+@@ -94,3 +94,8 @@ TARGET_KERNEL_CLANG_VERSION := r563880c
+ # Use += on any further line. A second := silently discards this one.
+ TARGET_KERNEL_ADDITIONAL_FLAGS := KCFLAGS="-Wno-error=unknown-warning-option -Wno-error=default-const-init-unsafe -Wno-error=default-const-init-field-unsafe -Wno-error=array-bounds -Wno-error=frame-larger-than -Wno-error=misleading-indentation"
+ 
++# Disable kernel LTO. Handled at kernel.mk:317-341; valid values none/thin/full.
++# ThinLTO on a 4.14 tree with a modern lld is a known source of link failures
++# and very long link times.
++KERNEL_LTO := none
++
+-- 
+2.49.0
+
