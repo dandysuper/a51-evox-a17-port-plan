@@ -1,0 +1,55 @@
+From 38f1cfe94ee2fb826cf6c1c1cd3031f724e0dd91 Mon Sep 17 00:00:00 2001
+From: dandysuper <a@b.c>
+Date: Sun, 9 Aug 2026 09:29:44 +0500
+Subject: [PATCH] a51: Android 17 VINTF and kernel requirement compatibility
+
+Two compatibility gates block an Android 17 build on this device.
+
+The vendor blobs are extracted from A515FXXU8HWK1, whose vendor security
+patch level is 2023-08-01. Reporting a three-year-old vendor patch level
+against an Android 17 platform fails VINTF compatibility, so pin
+VENDOR_SECURITY_PATCH to PLATFORM_SECURITY_PATCH.
+
+universal9611 runs Linux 4.14. Android 17's OTA-time VINTF kernel
+requirement check assumes a much newer baseline and would reject every
+package this device can produce, so disable it.
+
+Both settings match a known-good Android 17 build on comparable hardware.
+---
+ BoardConfig.mk | 7 +++++++
+ device.mk      | 7 +++++++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/BoardConfig.mk b/BoardConfig.mk
+index e6add38..18e583a 100644
+--- a/BoardConfig.mk
++++ b/BoardConfig.mk
+@@ -58,3 +58,10 @@ BOARD_VENDOR_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy/vendor
+ 
+ ## Prop
+ TARGET_VENDOR_PROP += $(DEVICE_PATH)/vendor.prop
++
++## Android 17 compatibility
++# The A51 vendor blobs come from A515FXXU8HWK1 (vendor security patch
++# 2023-08-01). Reporting that against an Android 17 platform fails VINTF
++# compatibility; pin the vendor patch level to the platform's instead.
++VENDOR_SECURITY_PATCH := $(PLATFORM_SECURITY_PATCH)
++
+diff --git a/device.mk b/device.mk
+index 6aedade..dc6910b 100644
+--- a/device.mk
++++ b/device.mk
+@@ -49,3 +49,10 @@ PRODUCT_COPY_FILES += \
+     $(DEVICE_PATH)/configs/audio/mixer_paths.xml:$(TARGET_COPY_OUT_VENDOR)/etc/mixer_paths.xml \
+     $(DEVICE_PATH)/configs/audio/mixer_paths_ti.xml:$(TARGET_COPY_OUT_VENDOR)/etc/mixer_paths_ti.xml \
+     $(DEVICE_PATH)/configs/audio/dax-default.xml:$(TARGET_COPY_OUT_VENDOR)/etc/dolby/dax-default.xml
++
++## Android 17 compatibility
++# universal9611 runs Linux 4.14. Android 17's OTA-time VINTF kernel
++# requirement check assumes a far newer baseline and would reject every
++# package this device can produce.
++PRODUCT_OTA_ENFORCE_VINTF_KERNEL_REQUIREMENTS := false
++
+-- 
+2.49.0
+
