@@ -1,0 +1,28 @@
+From 0dc8bbf6dafdd5752bba698bf77c637c369ad05a Mon Sep 17 00:00:00 2001
+From: dandysuper <a@b.c>
+Date: Sun, 9 Aug 2026 12:16:58 +0500
+Subject: [PATCH] a51: Correct the XML declaration in the framework matrix
+
+configs/vintf/device_framework_matrix.xml declared <?xml version="2.0"?>.
+There is no XML 2.0 - the specification defines 1.0 and 1.1 only. tinyxml2
+tolerates it today, but nothing guarantees a stricter parser will.
+
+The compatibility-matrix element's own version="2.0" attribute is a
+separate, valid VINTF schema version and is left alone.
+---
+ configs/vintf/device_framework_matrix.xml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/configs/vintf/device_framework_matrix.xml b/configs/vintf/device_framework_matrix.xml
+index 7471d14..f9c8e9d 100644
+--- a/configs/vintf/device_framework_matrix.xml
++++ b/configs/vintf/device_framework_matrix.xml
+@@ -1,4 +1,4 @@
+-<?xml version="2.0" encoding="UTF-8"?>
++<?xml version="1.0" encoding="UTF-8"?>
+ <compatibility-matrix version="2.0" type="framework">
+     <hal format="hidl" optional="true">
+         <name>vendor.nxp.nxpnfc</name>
+-- 
+2.49.0
+
