@@ -1,0 +1,47 @@
+From afd5730c9ff17e60c511f083727c70781349d65c Mon Sep 17 00:00:00 2001
+From: dandysuper <a@b.c>
+Date: Sun, 9 Aug 2026 16:40:15 +0500
+Subject: [PATCH] a51: Relax kernel warning-as-error classes
+
+HOLD. Apply only if the kernel fails to compile on a warning.
+
+kernel Makefile:564 adds -Werror=unknown-warning-option, so a -Wno-<name>
+that LLVM 22 renamed or removed becomes a hard error instead of being
+ignored. That is the most likely way a 4.14 tree breaks on a newer clang.
+
+kernel.mk:275-277 appends TARGET_KERNEL_ADDITIONAL_FLAGS after the
+unconditional LLVM=1 LLVM_IAS=1 at :129, so a device value wins.
+
+Prefer patch 0007 (pin LLVM 21) first - reverting the compiler is cleaner
+than suppressing diagnostics. Use this when 0007 is not enough or when the
+error is specific and known-benign.
+
+Nuclear fallback is KCFLAGS="-Wno-error". Never set LLVM_IAS=0:
+lineage-24.0 ships no GNU as, so -no-integrated-as finds no assembler.
+---
+ BoardConfig.mk | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/BoardConfig.mk b/BoardConfig.mk
+index 84edccd..74b76dc 100644
+--- a/BoardConfig.mk
++++ b/BoardConfig.mk
+@@ -82,3 +82,15 @@ VENDOR_SECURITY_PATCH := $(PLATFORM_SECURITY_PATCH)
+ # lineage-24.0 with no pin at all - so the default may well work.
+ TARGET_KERNEL_CLANG_VERSION := r563880c
+ 
++## Kernel build workarounds
++# kernel/samsung/universal9611 Makefile:564 adds -Werror=unknown-warning-option,
++# so any -Wno-<name> that a newer LLVM renamed or dropped becomes a hard error
++# rather than being ignored. These relax the classes most likely to trip a
++# 4.14 tree on LLVM 22.
++#
++# kernel.mk:275-277 appends TARGET_KERNEL_ADDITIONAL_FLAGS LAST, after the
++# unconditional LLVM=1 LLVM_IAS=1 at :129, so this wins.
++#
++# Use += on any further line. A second := silently discards this one.
++TARGET_KERNEL_ADDITIONAL_FLAGS := KCFLAGS="-Wno-error=unknown-warning-option -Wno-error=default-const-init-unsafe -Wno-error=default-const-init-field-unsafe -Wno-error=array-bounds -Wno-error=frame-larger-than -Wno-error=misleading-indentation"
++
+-- 
+2.49.0
+
