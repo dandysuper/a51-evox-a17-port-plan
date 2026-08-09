@@ -1,0 +1,40 @@
+From e6d4e2ad0d79b96b11c039528bba0e9d173cb36e Mon Sep 17 00:00:00 2001
+From: dandysuper <a@b.c>
+Date: Sun, 9 Aug 2026 16:40:15 +0500
+Subject: [PATCH] a51: Disable VINTF manifest enforcement
+
+HOLD. Apply only if check_vintf rejects the FCM target level.
+
+universal9611-common/manifest.xml:1 is target-level="6" (Android 12). AOSP
+retires FCM levels; if Android 17 no longer accepts 6, check_vintf fails.
+
+Try raising target-level first. Each level adds mandatory HAL requirements
+the device must genuinely satisfy, so this flag conceals a real
+incompatibility rather than fixing it - acceptable to get a first boot,
+never acceptable in a release.
+---
+ device.mk | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/device.mk b/device.mk
+index dc6910b..0cc9a65 100644
+--- a/device.mk
++++ b/device.mk
+@@ -56,3 +56,14 @@ PRODUCT_COPY_FILES += \
+ # package this device can produce.
+ PRODUCT_OTA_ENFORCE_VINTF_KERNEL_REQUIREMENTS := false
+ 
++# Disable VINTF manifest enforcement.
++# universal9611-common/manifest.xml:1 declares target-level="6" (Android 12).
++# AOSP retires FCM levels over time; if 17 no longer accepts 6, check_vintf
++# fails the build.
++#
++# Prefer raising target-level first - each level adds mandatory HAL
++# requirements the device must then actually satisfy, so this flag hides real
++# incompatibility rather than resolving it. It is a bring-up expedient, not a
++# release setting.
++PRODUCT_ENFORCE_VINTF_MANIFEST := false
++
+-- 
+2.49.0
+
