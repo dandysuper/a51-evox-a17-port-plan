@@ -1,6 +1,6 @@
-From 54d0bb61e2287271b3ba722fcd0fe53790d283d2 Mon Sep 17 00:00:00 2001
+From 83d18d59c258713e32600e92e752efbcbf309785 Mon Sep 17 00:00:00 2001
 From: dandysuper <a@b.c>
-Date: Sat, 8 Aug 2026 20:33:07 +0500
+Date: Sun, 9 Aug 2026 10:31:29 +0500
 Subject: [PATCH] a51: Stop truncating the camera extra_ids list
 
 soong_config_set takes exactly three arguments and uses $(strip $3).
@@ -8,21 +8,23 @@ Passing 4,20,23,50,52,54 unquoted splits on commas, so 20 23 50 52 54 land
 in $4..$8 and are silently discarded - samsungCameraVars.extra_ids ends up
 as just '4'.
 
-Escape the separators through a comma variable so the full list survives.
+Escape the separators with $(comma), which the build system already defines
+in build/make/common/core.mk. Do not redefine it locally: it is marked
+.KATI_READONLY and reassigning it fails the whole product config with
+'cannot assign to readonly variable: comma'.
 ---
- BoardConfig.mk | 3 ++-
- 1 file changed, 2 insertions(+), 1 deletion(-)
+ BoardConfig.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/BoardConfig.mk b/BoardConfig.mk
-index 5e7f448..c56a3ae 100644
+index 5e7f448..599ee6a 100644
 --- a/BoardConfig.mk
 +++ b/BoardConfig.mk
-@@ -42,7 +42,8 @@ BOARD_RECOVERYIMAGE_PARTITION_SIZE := 71106560
+@@ -42,7 +42,7 @@ BOARD_RECOVERYIMAGE_PARTITION_SIZE := 71106560
  BOARD_CACHEIMAGE_PARTITION_SIZE := 209715200
  
  ## Camera
 -$(call soong_config_set,samsungCameraVars,extra_ids,4,20,23,50,52,54)
-+comma := ,
 +$(call soong_config_set,samsungCameraVars,extra_ids,4$(comma)20$(comma)23$(comma)50$(comma)52$(comma)54)
  
  ## Vintf
