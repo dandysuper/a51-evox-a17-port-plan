@@ -317,6 +317,7 @@ if [[ "${A51_APPLY_PATCHES}" == "1" ]]; then
     "0003-a51-Stop-truncating-the-camera-extra_ids-list.patch"
     "0004-a51-Drop-the-dangling-public-sepolicy-directory.patch"
     "0005-a51-Android-17-VINTF-and-kernel-requirement-compatib.patch"
+    "0006-a51-Inherit-a-4-GB-dalvik-heap-profile.patch"
   )
 
   if [[ ! -d "${A51_DEVICE_DIR}" ]]; then
