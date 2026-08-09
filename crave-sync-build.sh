@@ -366,56 +366,19 @@ fi
 
 
 # =============================================================================
-# PHASE 7c - build-system workarounds for a 4.14 kernel on Android 17
+# PHASE 7c - build-system workarounds
 # =============================================================================
-# vendor/lineage/build/tasks/kernel.mk gates behaviour on TARGET_KERNEL_VERSION
-# and assumes a GKI-era baseline. universal9611 is Linux 4.14, far below it.
-# A known-good Android 17 build on comparable hardware neutralises the same
-# gates. Match strings are grepped rather than assumed, because they differ
-# between lineage branches - if a pattern is absent the sed is skipped and
-# logged rather than silently doing nothing.
-KERNEL_MK="vendor/lineage/build/tasks/kernel.mk"
-
-if [[ -f "${KERNEL_MK}" ]]; then
-  cp -f "${KERNEL_MK}" "${ARTIFACT_DIR}/kernel.mk.orig"
-  kernel_mk_patched=0
-
-  try_sed() {
-    local pattern="$1" replacement="$2" label="$3"
-    if grep -qF -- "${pattern}" "${KERNEL_MK}"; then
-      python3 - "${KERNEL_MK}" "${pattern}" "${replacement}" <<'PYEOF'
-import sys
-path, pat, rep = sys.argv[1], sys.argv[2], sys.argv[3]
-s = open(path).read()
-open(path, 'w').write(s.replace(pat, rep))
-PYEOF
-      echo "  patched: ${label}"
-      kernel_mk_patched=$(( kernel_mk_patched + 1 ))
-    else
-      echo "  absent (skipped): ${label}"
-    fi
-  }
-
-  try_sed 'ifeq ($(call is-version-lower-or-equal,$(TARGET_KERNEL_VERSION),6.1),true)' \
-          'ifeq ($(BOARD_USES_QCOM_HARDWARE),true)' \
-          'kernel version <= 6.1 gate'
-  try_sed 'ifeq ($(call is-version-greater-or-equal,$(TARGET_KERNEL_VERSION),5.15),true)' \
-          'ifeq ($(BOARD_USES_QCOM_HARDWARE),true)' \
-          'kernel version >= 5.15 gate'
-  try_sed 'GKI_SUFFIX := /$(shell echo android$(PLATFORM_VERSION)-$(TARGET_KERNEL_VERSION))' \
-          'NOT_NEEDED_DISCARD_567 := true' \
-          'GKI_SUFFIX'
-
-  echo "kernel.mk: ${kernel_mk_patched} gate(s) neutralised"
-  cp -f "${KERNEL_MK}" "${ARTIFACT_DIR}/kernel.mk.patched"
-  if (( kernel_mk_patched == 0 )); then
-    echo "NOTE: no known kernel version gates matched. If the build fails on"
-    echo "      TARGET_KERNEL_VERSION or GKI, diff kernel.mk.orig in the"
-    echo "      artifacts against upstream and add the current pattern."
-  fi
-else
-  echo "NOTE: ${KERNEL_MK} not present; nothing to patch."
-fi
+# NOTE: an earlier revision of this phase rewrote the TARGET_KERNEL_VERSION
+# conditionals in vendor/lineage/build/tasks/kernel.mk, copied from a build
+# for a Qualcomm device. That was wrong for this device and has been removed.
+#
+# On lineage-24.0 every one of those gates is nested inside
+#   ifeq ($(BOARD_USES_QCOM_HARDWARE),true)      # kernel.mk:137
+# so on Exynos they never evaluate. There is no minimum-kernel-version gate
+# in lineage-24.0 at all - nothing to neutralise.
+#
+# The kernel toolchain is the real variable, and it is handled in the device
+# tree, not here: see patch 0007 (held, unwired) for the LLVM 21 pin.
 
 # Duplicate Soong module: hardware/lineage/compat and prebuilts/misc both
 # defining prebuilt_libprotobuf-cpp-full-3.9.1-vendorcompat is a hard failure.
