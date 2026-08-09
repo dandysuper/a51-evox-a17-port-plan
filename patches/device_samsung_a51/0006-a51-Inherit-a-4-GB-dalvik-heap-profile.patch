@@ -1,22 +1,11 @@
-From 3d4d342faecc57a22c8199c181cd23238a3929f0 Mon Sep 17 00:00:00 2001
+From ffb65c1e67a789d4afb929eb02e0863fb00c5d80 Mon Sep 17 00:00:00 2001
 From: dandysuper <a@b.c>
-Date: Sun, 9 Aug 2026 09:36:21 +0500
+Date: Sun, 9 Aug 2026 10:31:29 +0500
 Subject: [PATCH] a51: Inherit a 4 GB dalvik heap profile
 
-Nothing in the inherit chain sets a device dalvik heap profile:
-
-  lineage_a51.mk
-    -> device/samsung/a51/device.mk
-       -> device/samsung/universal9611-common/common.mk
-          -> non_ab_device.mk, core_64_bit_only.mk,
-             universal9611-common-vendor.mk, config.mk, emulated_storage.mk
-       -> vendor/samsung/a51/a51-vendor.mk
-    -> full_base_telephony.mk
-    -> vendor/lineage/config/common_full_phone.mk
-
-Device trees are expected to inherit one of the phone-xhdpi-*-dalvik-heap.mk
-profiles matching their RAM. Without one the build takes untuned AOSP
-defaults.
+Nothing in the inherit chain sets a device dalvik heap profile, so the build
+takes untuned AOSP defaults. Device trees are expected to inherit one of the
+phone-xhdpi-*-dalvik-heap.mk profiles matching their RAM.
 
 SM-A515F ships in 4/64, 6/128 and 8/128 configurations. Target the smallest,
 since an oversized heap on a 4 GB unit costs more in swap pressure than a
