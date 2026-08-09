@@ -66,6 +66,15 @@ ANDROID_ROOT="${ANDROID_ROOT:-/tmp/src/android}"
 DEVICE="${DEVICE:-a51}"
 PACKAGE_NAME="${PACKAGE_NAME:-EvolutionX}"
 BUILD_JOBS="${BUILD_JOBS:-$(nproc --all)}"
+
+# Skip PHASES 1-6 (the whole sync) and go straight to patching + building.
+# The sync costs 20+ minutes; when iterating on Soong or compile errors
+# against an already-good tree there is no reason to pay it again.
+#   crave run ... -- "... | bash -s resume"      or   A51_RESUME_SYNC=1
+A51_RESUME=0
+if [[ " ${*} " == *" resume "* || "${A51_RESUME_SYNC:-0}" == "1" ]]; then
+  A51_RESUME=1
+fi
 EVO_MANIFEST_SHA="${EVO_MANIFEST_SHA:-}"
 PUBLIC_REPO_RAW="${A51_PUBLIC_REPO_RAW:-https://raw.githubusercontent.com/dandysuper/a51-evox-a17-port-plan}"
 PUBLIC_REVISION="${A51_PUBLIC_REVISION:-main}"
@@ -129,6 +138,11 @@ check_fail() {
 }
 
 notify_send "A51 ${PACKAGE_NAME} Android 17 build on crave.io started (${BUILD_JOBS} jobs)."
+
+if (( A51_RESUME )); then
+  echo "RESUME: skipping PHASES 1-6, reusing the existing synced tree."
+  [[ -f build/envsetup.sh ]] || { echo "REFUSING: resume requested but no tree present." >&2; echo "fail" > result.txt; exit 72; }
+else
 
 # =============================================================================
 # PHASE 1 — kill the stale carrier manifest and re-init Evolution X cnb
@@ -242,6 +256,8 @@ repo forall -c "git clean -fdx ; git reset --hard HEAD"
 resync_with_pruning
 check_fail
 
+fi   # end resume guard (PHASES 1-6)
+
 # =============================================================================
 # PHASE 7 — verify workspace and record the manifest lockfile
 # =============================================================================
@@ -300,6 +316,7 @@ if [[ "${A51_APPLY_PATCHES}" == "1" ]]; then
     "0002-a51-Declare-the-super-partition-size-the-hardware-ac.patch"
     "0003-a51-Stop-truncating-the-camera-extra_ids-list.patch"
     "0004-a51-Drop-the-dangling-public-sepolicy-directory.patch"
+    "0005-a51-Android-17-VINTF-and-kernel-requirement-compatib.patch"
   )
 
   if [[ ! -d "${A51_DEVICE_DIR}" ]]; then
@@ -344,6 +361,68 @@ if [[ "${A51_APPLY_PATCHES}" == "1" ]]; then
   notify_send "A51 device tree patches applied (${patches_applied} new, ${patches_skipped} present)."
 else
   echo "Device tree patches SKIPPED (A51_APPLY_PATCHES=0)"
+fi
+
+
+# =============================================================================
+# PHASE 7c - build-system workarounds for a 4.14 kernel on Android 17
+# =============================================================================
+# vendor/lineage/build/tasks/kernel.mk gates behaviour on TARGET_KERNEL_VERSION
+# and assumes a GKI-era baseline. universal9611 is Linux 4.14, far below it.
+# A known-good Android 17 build on comparable hardware neutralises the same
+# gates. Match strings are grepped rather than assumed, because they differ
+# between lineage branches - if a pattern is absent the sed is skipped and
+# logged rather than silently doing nothing.
+KERNEL_MK="vendor/lineage/build/tasks/kernel.mk"
+
+if [[ -f "${KERNEL_MK}" ]]; then
+  cp -f "${KERNEL_MK}" "${ARTIFACT_DIR}/kernel.mk.orig"
+  kernel_mk_patched=0
+
+  try_sed() {
+    local pattern="$1" replacement="$2" label="$3"
+    if grep -qF -- "${pattern}" "${KERNEL_MK}"; then
+      python3 - "${KERNEL_MK}" "${pattern}" "${replacement}" <<'PYEOF'
+import sys
+path, pat, rep = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(path).read()
+open(path, 'w').write(s.replace(pat, rep))
+PYEOF
+      echo "  patched: ${label}"
+      kernel_mk_patched=$(( kernel_mk_patched + 1 ))
+    else
+      echo "  absent (skipped): ${label}"
+    fi
+  }
+
+  try_sed 'ifeq ($(call is-version-lower-or-equal,$(TARGET_KERNEL_VERSION),6.1),true)' \
+          'ifeq ($(BOARD_USES_QCOM_HARDWARE),true)' \
+          'kernel version <= 6.1 gate'
+  try_sed 'ifeq ($(call is-version-greater-or-equal,$(TARGET_KERNEL_VERSION),5.15),true)' \
+          'ifeq ($(BOARD_USES_QCOM_HARDWARE),true)' \
+          'kernel version >= 5.15 gate'
+  try_sed 'GKI_SUFFIX := /$(shell echo android$(PLATFORM_VERSION)-$(TARGET_KERNEL_VERSION))' \
+          'NOT_NEEDED_DISCARD_567 := true' \
+          'GKI_SUFFIX'
+
+  echo "kernel.mk: ${kernel_mk_patched} gate(s) neutralised"
+  cp -f "${KERNEL_MK}" "${ARTIFACT_DIR}/kernel.mk.patched"
+  if (( kernel_mk_patched == 0 )); then
+    echo "NOTE: no known kernel version gates matched. If the build fails on"
+    echo "      TARGET_KERNEL_VERSION or GKI, diff kernel.mk.orig in the"
+    echo "      artifacts against upstream and add the current pattern."
+  fi
+else
+  echo "NOTE: ${KERNEL_MK} not present; nothing to patch."
+fi
+
+# Duplicate Soong module: hardware/lineage/compat and prebuilts/misc both
+# defining prebuilt_libprotobuf-cpp-full-3.9.1-vendorcompat is a hard failure.
+if [[ -f hardware/lineage/compat/Android.bp && -f prebuilts/misc/protobuf_vendorcompat/Android.bp ]] \
+   && grep -q prebuilt_libprotobuf-cpp-full-3.9.1-vendorcompat hardware/lineage/compat/Android.bp \
+   && grep -q prebuilt_libprotobuf-cpp-full-3.9.1-vendorcompat prebuilts/misc/protobuf_vendorcompat/Android.bp; then
+  echo "Removing duplicate protobuf vendorcompat module definition"
+  rm -f prebuilts/misc/protobuf_vendorcompat/Android.bp
 fi
 
 
