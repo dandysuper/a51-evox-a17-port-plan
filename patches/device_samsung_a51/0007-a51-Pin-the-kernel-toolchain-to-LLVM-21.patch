@@ -1,0 +1,53 @@
+From 98683fde5511a4eb8e57d0009d4cea569d78c66e Mon Sep 17 00:00:00 2001
+From: dandysuper <a@b.c>
+Date: Sun, 9 Aug 2026 12:16:58 +0500
+Subject: [PATCH] a51: Pin the kernel toolchain to LLVM 21
+
+lineage-24.0 resolves the kernel compiler to clang-r584948 (LLVM 22.0.0).
+This kernel has only ever shipped against clang-r563880c (LLVM 21.0.0) on
+lineage-23.2. Both prebuilts exist at android-17.0.0_r1, so pinning back to
+21 requires no external toolchain.
+
+HOLD THIS PATCH unless the default fails. The kernel already carries the
+LLVM modernisation backports and an Exynos 4.19 device (a21s) builds on
+lineage-24.0 with no pin, so LLVM 22 may be fine. Pinning pre-emptively
+means never finding out.
+
+Residual hazard if it does fail: Makefile:564 adds
+-Werror=unknown-warning-option, so any -Wno-<name> that LLVM 22 renamed
+becomes a hard error. Relief goes in TARGET_KERNEL_ADDITIONAL_FLAGS, which
+kernel.mk appends last (:275-277). Never set LLVM_IAS=0 - lineage-24.0
+ships no GNU as.
+---
+ BoardConfig.mk | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/BoardConfig.mk b/BoardConfig.mk
+index fbcfacf..84edccd 100644
+--- a/BoardConfig.mk
++++ b/BoardConfig.mk
+@@ -64,3 +64,21 @@ TARGET_VENDOR_PROP += $(DEVICE_PATH)/vendor.prop
+ # compatibility; pin the vendor patch level to the platform's instead.
+ VENDOR_SECURITY_PATCH := $(PLATFORM_SECURITY_PATCH)
+ 
++## Kernel toolchain
++# lineage-24.0 defaults the kernel compiler to clang-r584948 (LLVM 22.0.0);
++# lineage-23.2 - the branch this kernel actually ships on - used
++# clang-r563880c (LLVM 21.0.0). Both prebuilts are present at
++# android-17.0.0_r1, so pinning costs nothing and needs no download.
++#
++# Note vendor/lineage commit 21fb2c0ccda9 ("kernel: Rip out GCC support",
++# 2026-07-02) deleted TARGET_KERNEL_NO_GCC, TARGET_KERNEL_CLANG_COMPILE and
++# TARGET_KERNEL_LLVM_BINUTILS from lineage-24.0. BoardConfigCommon.mk:84
++# still sets TARGET_KERNEL_NO_GCC; it is now a no-op.
++#
++# Apply this ONLY if the default LLVM 22 fails to build the 4.14 kernel.
++# The kernel already carries the LLVM modernisation series (LLVM=1 support,
++# --target inference, LLVM_IAS=1, -Wdefault-const-init-unsafe disabled), and
++# LineageOS/android_device_samsung_a21s builds an Exynos 850 4.19 kernel on
++# lineage-24.0 with no pin at all - so the default may well work.
++TARGET_KERNEL_CLANG_VERSION := r563880c
++
+-- 
+2.49.0
+
