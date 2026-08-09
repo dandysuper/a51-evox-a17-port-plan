@@ -65,7 +65,12 @@ set -u
 ANDROID_ROOT="${ANDROID_ROOT:-/tmp/src/android}"
 DEVICE="${DEVICE:-a51}"
 PACKAGE_NAME="${PACKAGE_NAME:-EvolutionX}"
-BUILD_JOBS="${BUILD_JOBS:-$(nproc --all)}"
+# AOSP wants roughly 2 GiB per parallel job. The last build was OOM-killed in
+# Soong at -j16, so cap by memory as well as by core count.
+_cores="$(nproc --all)"
+_memgib=$(( $(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 33554432) / 1024 / 1024 ))
+_memjobs=$(( _memgib / 2 )); (( _memjobs < 2 )) && _memjobs=2
+BUILD_JOBS="${BUILD_JOBS:-$(( _cores < _memjobs ? _cores : _memjobs ))}"
 
 # Skip PHASES 1-6 (the whole sync) and go straight to patching + building.
 # The sync costs 20+ minutes; when iterating on Soong or compile errors
@@ -457,66 +462,100 @@ echo "Lunched ${TARGET_PRODUCT_ACTUAL}-cp2a-${TARGET_BUILD_VARIANT:-user}"
 mka installclean
 check_fail
 
+# -----------------------------------------------------------------------------
+# Soong OOM ladder
+#
+# Build 292xxx (2026-08-09) died here three times with exit=137 (SIGKILL, the
+# kernel OOM killer) and memory stalls escalating to 3m48s/s. The previous
+# ladder held GOMEMLIMIT at 52GiB on five of seven rungs. GOMEMLIMIT only does
+# anything when it is BELOW available memory - set above it, Go grows freely
+# and is killed anyway, so every rung retried at effectively the same ceiling.
+#
+# Evidence it was the ceiling and not bad luck: attempt 1 reported
+# "297 done, 1 failed", attempt 2 "1 done, 1 failed". soong_build resumes
+# incrementally, so by the second attempt exactly one step remained - and that
+# step will never fit until the limit actually drops.
+#
+# This ladder derives the limit from real memory and descends hard.
+# -----------------------------------------------------------------------------
 CRAVE_SOONG_WORKAROUND="${CRAVE_SOONG_WORKAROUND:-1}"
 if [[ "${CRAVE_SOONG_WORKAROUND}" == "1" ]]; then
+
+  MEM_TOTAL_KB="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  MEM_TOTAL_GIB=$(( MEM_TOTAL_KB / 1024 / 1024 ))
+  if (( MEM_TOTAL_GIB < 4 )); then
+    echo "WARNING: could not read MemTotal; assuming 32 GiB"
+    MEM_TOTAL_GIB=32
+  fi
+  echo "=============================================="
+  echo "Worker memory : ${MEM_TOTAL_GIB} GiB total"
+  free -h 2>/dev/null || true
+  echo "nproc         : $(nproc --all)"
+  echo "=============================================="
+
+  # gctrace produced ~400 KB of noise in the last log. Off unless asked for.
+  SOONG_GCTRACE="${SOONG_GCTRACE:-0}"
+  SOONG_TIMEOUT="${SOONG_TIMEOUT:-2400}"
+
   do_soong() {
-    ( sleep 1800; pkill -9 -e soong_build || true ) &
+    ( sleep "${SOONG_TIMEOUT}"; pkill -9 -e soong_build || true ) &
     local sleep_pid=$!
-    notify_send "Soong attempt in progress."
+    echo "--- soong: GOMEMLIMIT=${GOMEMLIMIT:-unset} GOMAXPROCS=${GOMAXPROCS:-unset} GOGC=${GOGC:-unset} ---"
     if m nothing; then
       kill "${sleep_pid}" 2>/dev/null || true
-      notify_send "Soong succeeded."
       return 0
     fi
     kill "${sleep_pid}" 2>/dev/null || true
-    notify_send "Soong failed."
     return 1
   }
 
-  export GOMEMLIMIT=52GiB GOGC=20 GODEBUG="gctrace=1"
-  notify_send "Soong ladder phase 1 (baseline)."
-  do_soong || do_soong || do_soong || do_soong
-  unset GOMEMLIMIT GOGC GODEBUG
-  rm -rf out/soong
+  # rung = "<percent of total RAM> <GOMAXPROCS>"
+  SOONG_RUNGS=("70 8" "50 6" "35 4" "25 2" "18 2")
+  soong_ok=0
+  rung_n=0
 
-  export GOMEMLIMIT=52GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=12
-  notify_send "Soong ladder phase 2 (12 procs)."
-  do_soong || do_soong || do_soong || do_soong
-  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
-  rm -rf out/soong
+  for rung in "${SOONG_RUNGS[@]}"; do
+    rung_n=$(( rung_n + 1 ))
+    set -- ${rung}
+    pct="$1"; procs="$2"
+    lim=$(( MEM_TOTAL_GIB * pct / 100 ))
+    (( lim < 4 )) && lim=4
 
-  export GOMEMLIMIT=52GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=8
-  notify_send "Soong ladder phase 3 (8 procs)."
-  do_soong || do_soong || do_soong || do_soong
-  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
-  rm -rf out/soong
+    export GOMEMLIMIT="${lim}GiB"
+    export GOGC=20
+    export GOMAXPROCS="${procs}"
+    [[ "${SOONG_GCTRACE}" == "1" ]] && export GODEBUG="gctrace=1"
 
-  export GOMEMLIMIT=45GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=12
-  notify_send "Soong ladder phase 4 (45GiB/12 procs)."
-  do_soong || do_soong || do_soong || do_soong
-  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
-  rm -rf out/soong
+    notify_send "Soong rung ${rung_n}/${#SOONG_RUNGS[@]}: ${lim}GiB / ${procs} procs."
+    echo ">>> Soong rung ${rung_n}: GOMEMLIMIT=${lim}GiB (${pct}% of ${MEM_TOTAL_GIB}GiB), GOMAXPROCS=${procs}"
 
-  export GOMEMLIMIT=52GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=4
-  notify_send "Soong ladder phase 5 (4 procs)."
-  do_soong || do_soong || do_soong || do_soong
-  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
-  rm -rf out/soong
+    # Two attempts per rung, not four. soong_build resumes incrementally, so a
+    # second try can finish work the first started - but a third at unchanged
+    # settings only burns queue time.
+    if do_soong || do_soong; then
+      soong_ok=1
+      notify_send "Soong succeeded at rung ${rung_n} (${lim}GiB / ${procs} procs)."
+      echo ">>> Soong succeeded at rung ${rung_n}"
+      unset GOMEMLIMIT GOGC GOMAXPROCS GODEBUG
+      break
+    fi
 
-  export GOMEMLIMIT=52GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=2
-  notify_send "Soong ladder phase 6 (2 procs)."
-  do_soong || do_soong || do_soong || do_soong
-  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
-  rm -rf out/soong
+    echo ">>> rung ${rung_n} failed, descending"
+    unset GOMEMLIMIT GOGC GOMAXPROCS GODEBUG
+  done
 
-  export GOMEMLIMIT=45GiB GOGC=20 GODEBUG="gctrace=1" GOMAXPROCS=6
-  notify_send "Soong ladder phase 7 (45GiB/6 procs)."
-  do_soong || do_soong || do_soong || do_soong
-  unset GOMEMLIMIT GOGC GODEBUG GOMAXPROCS
-  rm -rf out/soong
+  if (( soong_ok == 0 )); then
+    notify_send "Soong failed on every rung down to 18% of RAM."
+    echo "Soong could not complete at any memory ceiling."
+    echo "Collecting diagnostics before giving up."
+    cp -f out/error.log "${ARTIFACT_DIR}/soong-error.log" 2>/dev/null || true
+    cp -f out/soong/siso_failed_commands.sh "${ARTIFACT_DIR}/" 2>/dev/null || true
+    free -h > "${ARTIFACT_DIR}/mem-at-failure.txt" 2>/dev/null || true
+    echo "fail" > result.txt
+    exit 73
+  fi
 
-  notify_send "Soong ladder finished."
-  unset do_soong
+  unset -f do_soong
 fi
 
 # =============================================================================
@@ -538,6 +577,20 @@ if (( ${#zip_files[@]} > 0 )); then
   cp "${zip_files[@]}" "${ARTIFACT_DIR}/"
 fi
 shopt -u nullglob
+
+# Soong writes build errors here. Collect it even on success - a build can
+# complete with recoverable errors worth reading.
+cp -f out/error.log "${ARTIFACT_DIR}/error.log" 2>/dev/null || true
+cp -f out/soong/siso_failed_commands.sh "${ARTIFACT_DIR}/" 2>/dev/null || true
+
+# Report whether an OTA package actually exists. A non-zero exit later with a
+# zip already on disk means packaging worked and something after it failed -
+# do not treat that as nothing.
+if ls out/target/product/${DEVICE}/*.zip >/dev/null 2>&1; then
+  echo "OTA package(s) present:"; ls -lh out/target/product/${DEVICE}/*.zip
+else
+  echo "WARNING: no OTA package in out/target/product/${DEVICE}/"
+fi
 
 BUILD_TIME=$(printf '%dh:%dm:%ds' $((SECONDS/3600)) $((SECONDS%3600/60)) $((SECONDS%60)))
 notify_send "A51 build completed. ${BUILD_TIME}."
