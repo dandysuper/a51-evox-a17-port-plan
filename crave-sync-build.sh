@@ -438,6 +438,12 @@ export KBUILD_BUILD_HOST=localhost
 # build completes and lists them.
 export BUILD_BROKEN_MISSING_REQUIRED_MODULES=true
 
+# Let Soong continue past modules whose dependencies cannot be resolved,
+# rather than aborting on the first. Standard for a cross-generation port -
+# the vendor trees are lineage-23.2 against a lineage-24.0 common tree, so
+# unresolvable references are expected. Errors are still reported.
+export ALLOW_MISSING_DEPENDENCIES=true
+
 # envsetup.sh and lunch legitimately reference unset shell variables.
 set +u
 source build/envsetup.sh
@@ -561,7 +567,43 @@ fi
 # =============================================================================
 # PHASE 10 — the real build (292073 build command, adapted to a51)
 # =============================================================================
-PRODUCT_OTA_ENFORCE_VINTF_KERNEL_REQUIREMENTS=false m evolution -j"${BUILD_JOBS}"
+# -k 0 : keep going after a failure and report EVERY broken target instead of
+# stopping at the first. On a port that has never compiled, one run with -k
+# yields the complete error list; without it each run reveals a single fault
+# and the next 20 minutes of queue time buys one more. Set A51_KEEP_GOING=0
+# for a conventional fail-fast build.
+A51_KEEP_GOING="${A51_KEEP_GOING:-1}"
+if [[ "${A51_KEEP_GOING}" == "1" ]]; then
+  echo ">>> keep-going enabled: collecting all failures in one pass"
+  PRODUCT_OTA_ENFORCE_VINTF_KERNEL_REQUIREMENTS=false \
+    m evolution -j"${BUILD_JOBS}" -k 0 || build_rc=$?
+else
+  PRODUCT_OTA_ENFORCE_VINTF_KERNEL_REQUIREMENTS=false \
+    m evolution -j"${BUILD_JOBS}" || build_rc=$?
+fi
+build_rc="${build_rc:-0}"
+
+# Always capture diagnostics, whatever the exit code.
+cp -f out/error.log "${ARTIFACT_DIR}/error.log" 2>/dev/null || true
+cp -f out/soong/siso_failed_commands.sh "${ARTIFACT_DIR}/" 2>/dev/null || true
+grep -E "^(FAILED|ninja: build stopped|error:)" "${ARTIFACT_DIR}/build.log" 2>/dev/null \
+  | sort -u > "${ARTIFACT_DIR}/failure-summary.txt" || true
+if [[ -s "${ARTIFACT_DIR}/failure-summary.txt" ]]; then
+  echo ">>> distinct failures this run: $(wc -l < "${ARTIFACT_DIR}/failure-summary.txt")"
+  head -40 "${ARTIFACT_DIR}/failure-summary.txt"
+fi
+
+if (( build_rc != 0 )); then
+  if ls out/target/product/${DEVICE}/*.zip >/dev/null 2>&1; then
+    echo "SOFTFAIL: build returned ${build_rc} but an OTA package exists"
+    notify_send "A51 build softfailed (rc=${build_rc}) - package present."
+    echo softfail > result.txt
+  else
+    notify_send "A51 build failed (rc=${build_rc})."
+    echo fail > result.txt
+    exit "${build_rc}"
+  fi
+fi
 check_fail
 
 # =============================================================================
