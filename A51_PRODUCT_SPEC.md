@@ -196,58 +196,136 @@ device and is worth sending upstream on its own.
 
 ## 8. Open questions
 
-Blocking or potentially blocking, in rough priority order.
+Revised after direct inspection of `lineage-24.0` build system source. The
+kernel/toolchain risk is **substantially lower** than the first revision of
+this document claimed.
 
-**Fingerprint AIDL pinned to V4.** `fingerprint/Android.bp:25-26` and
-`android.hardware.biometrics.fingerprint-service.a51.xml` use
-`...fingerprint-V4-ndk`, `...common-V4-ndk`, `<version>4</version>`. If AOSP 17
-freezes V5, both need bumping and `Fingerprint.cpp` / `Session.cpp` rebuilding
-against the new interface, possibly with stubs for new methods. Upstream
+### Resolved
+
+**Kernel VINTF requirements — not an issue.** `universal9611-common/manifest.xml`
+line 2 is `<kernel target-level="legacy"/>`, the standard exemption from FCM
+kernel-requirement checking. Already upstream. Patch 0005's
+`PRODUCT_OTA_ENFORCE_VINTF_KERNEL_REQUIREMENTS := false` is belt-and-braces on
+top of it.
+
+**No kernel version gate exists.** Every `TARGET_KERNEL_VERSION` conditional in
+`vendor/lineage/build/tasks/kernel.mk` @ lineage-24.0 (lines 137-140, 177,
+741-754) is nested inside `ifeq ($(BOARD_USES_QCOM_HARDWARE),true)` or inside
+`ifneq ($(TARGET_KERNEL_PLATFORM_TARGET),)`, neither of which applies here.
+There is no minimum-kernel-version check to defeat.
+
+**Kernel config present.** `exynos9611-a51_defconfig` exists on the kernel's
+`lineage-24.0` branch. `configs/kernel/a51.cfg` (371 B) and
+`configs/kernel/exynos9611.cfg` (61 B) exist in the **common** tree —
+`BoardConfigCommon.mk:72,76` reference them via `$(COMMON_PATH)`, not the
+device path.
+
+**`TARGET_KERNEL_NO_GCC := true` is dead.** `vendor/lineage` commit
+`21fb2c0ccda9` ("kernel: Rip out GCC support", 2026-07-02) removed
+`TARGET_KERNEL_NO_GCC`, `TARGET_KERNEL_CLANG_COMPILE`,
+`TARGET_KERNEL_LLVM_BINUTILS` and `TARGET_KERNEL_CROSS_COMPILE_PREFIX` from
+lineage-24.0. `BoardConfigCommon.mk:84` still sets it; it is now a no-op.
+
+### Open — kernel toolchain
+
+`TARGET_KERNEL_CLANG_VERSION` is unset, so the kernel builds with whatever
+clang lineage-24.0 resolves by default.
+
+| branch | clang | LLVM |
+|---|---|---|
+| lineage-23.2 | `clang-r563880c` | 21.0.0 |
+| **lineage-24.0** | `clang-r584948` | **22.0.0** |
+
+**The delta is one LLVM major version**, not a nine-year gap. The kernel already
+carries the LLVM modernisation series — `kbuild: support LLVM=1`, `Makefile:
+infer --target from ARCH for CC=clang`, `LLVM_IAS=1` by default, and
+`UPSTREAM: kbuild: Disable -Wdefault-const-init-unsafe` (the Clang 21
+breakage, already applied).
+
+Precedent: `LineageOS/android_device_samsung_a21s` is on `lineage-24.0` with an
+Exynos 850 / kernel **4.19.325** and **no clang pin**. An Exynos device with an
+old kernel already builds on this branch against default LLVM 22.
+
+Residual hazard is narrow: kernel `Makefile:564` adds
+`-Werror=unknown-warning-option`, so any `-Wno-<name>` that LLVM 22 renamed or
+dropped becomes a hard error.
+
+**Mitigation ladder — do not pre-apply.**
+
+0. Build unmodified. Kernel and device tree are effectively identical between
+   23.2 and 24.0; only LLVM 22 is untested.
+1. **Patch 0007 (written, deliberately unwired):**
+   `TARGET_KERNEL_CLANG_VERSION := r563880c`. Both prebuilts ship at
+   `android-17.0.0_r1` (`r547379`/LLVM 20, `r563880c`/21, `r584948`/22,
+   `r584948b`, `r596125`, `clang-stable`) so no download is needed.
+2. Targeted relief — `kernel.mk:275-277` appends
+   `TARGET_KERNEL_ADDITIONAL_FLAGS` **last**, so it overrides the unconditional
+   `LLVM=1 LLVM_IAS=1` at line 129:
+   `TARGET_KERNEL_ADDITIONAL_FLAGS := KCFLAGS="-Wno-error=unknown-warning-option ..."`
+   Use `+=` on any subsequent line, never a second `:=`.
+3. `KERNEL_LTO := none` if lld or LTO is the failure (`kernel.mk:317-341`).
+4. External toolchain via `TARGET_KERNEL_CLANG_PATH` (`BoardConfigKernel.mk:80`
+   is `?=`, so a device value wins and PATH/LD_LIBRARY_PATH follow).
+
+⚠️ **Never set `LLVM_IAS=0`** — lineage-24.0 ships no GNU `as`, so
+`-no-integrated-as` will fail to find an assembler.
+
+### Open — FCM target level
+
+`universal9611-common/manifest.xml:1` is `target-level="6"` (Android 12). AOSP
+retires FCM levels over time; if 17 no longer accepts 6, `check_vintf` fails.
+Common-tree issue, not device-tree. Ladder: try as-is → bump `target-level`
+incrementally, accepting that each level adds mandatory HAL requirements →
+`PRODUCT_ENFORCE_VINTF_MANIFEST := false` as the escape hatch. Do not set the
+escape hatch pre-emptively; it masks problems worth seeing.
+
+### Open — fingerprint AIDL
+
+`fingerprint/Android.bp:25-26` and the vintf fragment pin
+`android.hardware.biometrics.fingerprint-V4-ndk` / `<version>4</version>`. If
+AOSP 17 freezes V5, both need bumping and `Fingerprint.cpp` / `Session.cpp`
+rebuilding against the new interface. Upstream
 `hardware/samsung/aidl/fingerprint` is also still on V4 — no upstream answer
-exists. **Needs the real AOSP 17 tree to resolve.**
+exists. Needs the real AOSP 17 tree.
 
-**FCM target level.** `universal9611-common/manifest.xml:1` is
-`target-level="6"` (Android 12). AOSP retires old FCM levels; if 17 drops 6,
-`check_vintf` fails. Common-tree issue, not device-tree.
-`PRODUCT_OTA_ENFORCE_VINTF_KERNEL_REQUIREMENTS=false` covers OTA-time kernel
-requirements — it is **not** established that it covers a build-time FCM level
-check.
+### Open — vendor tree generation gap
 
-**Kernel build under Android 17.** `vendor/lineage/build/tasks/kernel.mk` gates
-on `TARGET_KERNEL_VERSION` and assumes a GKI-era baseline; 4.14 is far below it.
-PHASE 7c neutralises the gates it can find, saving `kernel.mk.orig` and
-`kernel.mk.patched` to the artifact dir. **Silencing a version gate is not the
-same as the kernel compiling and working.** The reference Android 17 build this
-approach came from used a *prebuilt* kernel and never compiled one — this is
-unexplored territory.
+`vendor/samsung/universal9611-common` and `vendor/samsung/a51` have **no
+`lineage-24.0` branch** — only `lineage-23.2`. The build pairs 23.2-era vendor
+blobs with a 24.0 common tree. This is the most likely source of runtime
+(rather than build-time) failure.
 
-**`ccache` absent on the worker.** `Error: ccache not found` in build output.
-Non-fatal, but every rebuild is a full rebuild. Significant given the expected
-number of iterations.
+### Non-blocking
 
-**Non-blocking, worth settling:**
-
+- `ccache` absent on the Crave worker (`Error: ccache not found`). Every
+  rebuild is a full rebuild — significant across many iterations.
 - `BoardConfigCommon.mk:192` — `BOARD_AVB_RECOVERY_KEY_PATH` still points at
-  `external/avb/test/data/testkey_rsa4096.pem`. Development only; a release
-  needs controlled keys and a documented AVB process.
-- 8 resources defined in both device and common overlays:
-  `config_autoBrightnessBrighteningLightDebounce`,
-  `config_autoBrightnessLcdBacklightValues`, `config_autoBrightnessLevels`,
-  `config_automatic_brightness_available`, `config_dozeAlwaysOnDisplayAvailable`,
-  `config_screenBrightnessDoze`, `config_screenBrightnessSettingMinimum`,
-  `config_supportDoubleTapWake`. `device.mk:24` appends after the common
-  overlay. Verify which wins in `framework-res_intermediates`.
-- `extract-files.py:30-32` shadows the imported `lib_fixups` defaults with a
-  bare dict containing only `nfc_nci_nxp`, which is itself redundant
-  (`proprietary-files.txt:77` already carries `;MODULE_SUFFIX=_vendor`).
-- `configs/vintf/device_framework_matrix.xml:1` declares
-  `<?xml version="2.0"?>`. No such XML version; tinyxml2 tolerates it.
-- `UdfpsHandler/include/UdfpsHandler.h` uses `std::string` with no
+  `external/avb/test/data/testkey_rsa4096.pem`. Development only.
+- 8 resources defined in both device and common overlays
+  (`config_autoBrightnessLevels`, `config_screenBrightnessDoze`,
+  `config_supportDoubleTapWake` and five others). `device.mk:24` appends after
+  the common overlay; verify which wins in `framework-res_intermediates`.
+- `extract-files.py:30-32` shadows the imported `lib_fixups` defaults.
+- `configs/vintf/device_framework_matrix.xml:1` declared `<?xml version="2.0"?>`
+  — fixed by patch 0008 (written, unwired).
+- `UdfpsHandler/include/UdfpsHandler.h` uses `std::string` without
   `#include <string>`.
 - `BoardConfig.mk:47` references `//device/samsung/a51:libudfps_extension.a51`
-  while a51 declares no `soong_namespace` and is not in
-  `PRODUCT_SOONG_NAMESPACES`. **Not a break** — Soong walks up and resolves in
+  while a51 declares no `soong_namespace`. **Not a break** — Soong resolves in
   the root namespace, same as `android_device_samsung_a71`. Leave it.
+
+### Ecosystem context
+
+No device tree for any Exynos 9611 codename (a51, m21, m31, m31s, f41) exists
+on any Android 17 branch anywhere. Evolution X `cnb` is real and shipping, but
+for roughly 26 devices, all Xiaomi Snapdragon — **zero Samsung, zero Exynos** in
+Evolution-X-Devices. In the LineageOS org the only Samsung `lineage-24.0`
+device trees are `sm8550-common`, `sm8250-common` (both Qualcomm) and `a21s`
+(Exynos 850). `Parbindar7/android_hardware_samsung_slsi-linaro_exynos` on
+`lineage-24.0` has real commits through 2026-07-04 and is likely the furthest
+along Exynos Android 17 work in existence.
+
+No public prebuilt Android 17 kernel exists for Exynos.
 
 ## 9. Verification
 
