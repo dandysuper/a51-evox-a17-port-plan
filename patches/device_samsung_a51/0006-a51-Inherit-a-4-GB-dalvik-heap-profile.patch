@@ -1,0 +1,48 @@
+From 3d4d342faecc57a22c8199c181cd23238a3929f0 Mon Sep 17 00:00:00 2001
+From: dandysuper <a@b.c>
+Date: Sun, 9 Aug 2026 09:36:21 +0500
+Subject: [PATCH] a51: Inherit a 4 GB dalvik heap profile
+
+Nothing in the inherit chain sets a device dalvik heap profile:
+
+  lineage_a51.mk
+    -> device/samsung/a51/device.mk
+       -> device/samsung/universal9611-common/common.mk
+          -> non_ab_device.mk, core_64_bit_only.mk,
+             universal9611-common-vendor.mk, config.mk, emulated_storage.mk
+       -> vendor/samsung/a51/a51-vendor.mk
+    -> full_base_telephony.mk
+    -> vendor/lineage/config/common_full_phone.mk
+
+Device trees are expected to inherit one of the phone-xhdpi-*-dalvik-heap.mk
+profiles matching their RAM. Without one the build takes untuned AOSP
+defaults.
+
+SM-A515F ships in 4/64, 6/128 and 8/128 configurations. Target the smallest,
+since an oversized heap on a 4 GB unit costs more in swap pressure than a
+conservative heap costs the larger variants.
+---
+ lineage_a51.mk | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/lineage_a51.mk b/lineage_a51.mk
+index c77bfcc..d889be5 100644
+--- a/lineage_a51.mk
++++ b/lineage_a51.mk
+@@ -26,6 +26,13 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/full_base_telephony.mk)
+ ## Inherit some common Lineage stuff
+ $(call inherit-product, vendor/lineage/config/common_full_phone.mk)
+ 
++# Dalvik heap. SM-A515F ships in 4/6/8 GB variants; target the smallest so a
++# 4 GB unit is not pushed into swap. Nothing in the inherit chain
++# (device.mk -> universal9611-common -> full_base_telephony -> common_full_phone)
++# sets a device heap profile, so without this the build falls back to AOSP
++# defaults that are not tuned for this device.
++$(call inherit-product, frameworks/native/build/phone-xhdpi-4096-dalvik-heap.mk)
++
+ # Shipping API level
+ PRODUCT_SHIPPING_API_LEVEL := 29
+ 
+-- 
+2.49.0
+
