@@ -320,6 +320,32 @@ if [[ "${A51_APPLY_PATCHES}" == "1" ]]; then
     "0006-a51-Inherit-a-4-GB-dalvik-heap-profile.patch"
   )
 
+  # Fallback patches. Each of these either suppresses a diagnostic or removes
+  # a component, so each one costs something: 0007 forgoes learning whether
+  # LLVM 22 works, 0009 hides warnings, 0010 costs kernel performance, 0011
+  # conceals a real VINTF incompatibility, 0012 drops the fingerprint sensor.
+  #
+  # They are enabled by default to maximise the chance of a first successful
+  # build. Once one succeeds, disable them and re-enable individually to find
+  # out which were actually needed:
+  #
+  #   A51_FALLBACK_PATCHES=0
+  #
+  A51_FALLBACK_PATCHES="${A51_FALLBACK_PATCHES:-1}"
+  if [[ "${A51_FALLBACK_PATCHES}" == "1" ]]; then
+    A51_PATCHES+=(
+      "0007-a51-Pin-the-kernel-toolchain-to-LLVM-21.patch"
+      "0008-a51-Correct-the-XML-declaration-in-the-framework-mat.patch"
+      "0009-a51-Relax-kernel-warning-as-error-classes.patch"
+      "0010-a51-Disable-kernel-LTO.patch"
+      "0011-a51-Disable-VINTF-manifest-enforcement.patch"
+      "0012-a51-Exclude-the-fingerprint-HAL-during-bring-up.patch"
+    )
+    echo "Fallback patches ENABLED (A51_FALLBACK_PATCHES=1)"
+  else
+    echo "Fallback patches disabled - building the unmodified configuration"
+  fi
+
   if [[ ! -d "${A51_DEVICE_DIR}" ]]; then
     echo "REFUSING: device/samsung/a51 is missing after resync." >&2
     echo "fail" > result.txt
