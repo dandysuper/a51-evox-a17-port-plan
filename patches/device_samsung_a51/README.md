@@ -4,13 +4,14 @@ Patches against `Parbindar7/android_device_samsung_a51` at
 `b9b86945f85114ed28076602c49b83051337ff85` (branch `lineage-23.2`, the revision
 pinned in `local_manifests/a51.xml`).
 
-`0001`–`0006` are applied automatically by `crave-sync-build.sh` at PHASE 7b,
+All twelve patches are applied automatically by `crave-sync-build.sh` at PHASE 7b,
 after both resyncs and after the `repo forall` deep clean. Any earlier
 placement is undone by `git reset --hard`. Application is idempotent, so
 re-running a job against a persisted workspace skips patches already present.
 Disable with `A51_APPLY_PATCHES=0`.
 
-`0007` and `0008` are **written but deliberately not wired in** — see below.
+`0001`–`0006` always apply. `0007`–`0012` are the fallback set, gated on
+`A51_FALLBACK_PATCHES` (default `1`) — see below.
 
 All are public-source only: no credentials, keys, or proprietary data.
 
@@ -18,10 +19,10 @@ All are public-source only: no credentials, keys, or proprietary data.
 
 ```bash
 cd device/samsung/a51
-git am /path/to/patches/device_samsung_a51/000[1-6]*.patch
+git am /path/to/patches/device_samsung_a51/*.patch   # numeric order matters
 ```
 
-## Active — 0001 to 0006
+## Core — 0001 to 0006
 
 ### 0001 — releasetools: write `vbmeta.img` during OTA install
 
@@ -103,38 +104,97 @@ untuned AOSP defaults. SM-A515F ships in 4/64, 6/128 and 8/128 configurations;
 target the smallest, since an oversized heap on a 4 GB unit costs more in swap
 pressure than a conservative heap costs the larger variants.
 
-## Held — 0007 and 0008
+## Fallback set — 0007 to 0012
 
-Present in this directory but **not** listed in `crave-sync-build.sh`. Add the
-filename to the `A51_PATCHES` array to activate.
+All twelve patches are now applied by default. `crave-sync-build.sh` splits
+them: `0001`–`0006` always apply, `0007`–`0012` apply only while
+`A51_FALLBACK_PATCHES=1` (the default).
 
-### 0007 — pin the kernel toolchain to LLVM 21 · HOLD
+**Each fallback patch costs something.** Once a build succeeds, turn them off
+and re-enable individually to find out which were actually needed:
+
+```
+A51_FALLBACK_PATCHES=0
+```
+
+| | costs |
+|---|---|
+| 0007 | forgoes learning whether LLVM 22 works |
+| 0008 | nothing — pure defect fix |
+| 0009 | hides warning classes that may be real |
+| 0010 | kernel runtime performance |
+| 0011 | conceals a genuine VINTF incompatibility |
+| 0012 | the fingerprint sensor |
+
+### 0007 — pin the kernel toolchain to LLVM 21
 
 lineage-24.0 resolves the kernel compiler to `clang-r584948` (LLVM 22.0.0);
-this kernel has only ever shipped against `clang-r563880c` (LLVM 21.0.0) on
-lineage-23.2. Both prebuilts exist at `android-17.0.0_r1`, so pinning needs no
-download.
+this kernel has only shipped against `clang-r563880c` (LLVM 21.0.0) on
+lineage-23.2. Both prebuilts exist at `android-17.0.0_r1`, so no download.
 
-**Held on purpose.** The kernel already carries the LLVM modernisation series,
-and `LineageOS/android_device_samsung_a21s` builds an Exynos 850 / 4.19 kernel
-on lineage-24.0 with no pin at all. LLVM 22 may simply work — pinning
-pre-emptively means never finding out.
+The kernel already carries the LLVM modernisation backports, and
+`LineageOS/android_device_samsung_a21s` builds an Exynos 850 / 4.19 kernel on
+lineage-24.0 with **no pin at all** — so LLVM 22 may simply work. This is the
+first patch to drop when narrowing down.
 
-Apply if the kernel fails to compile. Residual hazard: kernel `Makefile:564`
-adds `-Werror=unknown-warning-option`, so any `-Wno-<name>` LLVM 22 renamed
-becomes a hard error; relief belongs in `TARGET_KERNEL_ADDITIONAL_FLAGS`, which
-`kernel.mk:275-277` appends last. **Never set `LLVM_IAS=0`** — lineage-24.0
-ships no GNU `as`.
-
-### 0008 — correct the XML declaration in the framework matrix · HOLD
+### 0008 — correct the XML declaration in the framework matrix
 
 `configs/vintf/device_framework_matrix.xml` declared `<?xml version="2.0"?>`.
-No such XML version exists. tinyxml2 tolerates it today. The
-`compatibility-matrix` element's own `version="2.0"` is a separate, valid VINTF
-schema version and is left alone.
+No such XML version exists; the spec defines 1.0 and 1.1. tinyxml2 tolerates
+it today. The `compatibility-matrix` element's own `version="2.0"` is a
+separate, valid VINTF schema version and is untouched.
 
-Cosmetic today; held only to keep the active set to changes with a demonstrated
-need.
+**Keep this one permanently** — it is a real defect with no downside.
+
+### 0009 — relax kernel warning-as-error classes
+
+Kernel `Makefile:564` adds `-Werror=unknown-warning-option`, so any
+`-Wno-<name>` a newer LLVM renamed or dropped becomes a hard error rather than
+being ignored. That is the most likely way a 4.14 tree breaks on a newer clang.
+
+`kernel.mk:275-277` appends `TARGET_KERNEL_ADDITIONAL_FLAGS` **last**, after
+the unconditional `LLVM=1 LLVM_IAS=1` at `:129`, so a device value wins. Use
+`+=` on any further line — a second `:=` silently discards this one.
+
+Prefer 0007 first; reverting the compiler is cleaner than suppressing
+diagnostics. Nuclear fallback is `KCFLAGS="-Wno-error"`.
+
+> ⚠️ **Never set `LLVM_IAS=0`.** lineage-24.0 ships no GNU `as`, so
+> `-no-integrated-as` will fail to find an assembler.
+
+### 0010 — disable kernel LTO
+
+`kernel.mk:317-341` accepts `none` / `thin` / `full`. ThinLTO against a 4.14
+tree with a modern lld is a known source of link failures and of very long
+link times on a shared build queue. Trades runtime performance for build
+reliability — correct during bring-up, worth revisiting later.
+
+### 0011 — disable VINTF manifest enforcement
+
+`universal9611-common/manifest.xml:1` is `target-level="6"` (Android 12). AOSP
+retires FCM levels; if Android 17 no longer accepts 6, `check_vintf` fails.
+
+**Raising `target-level` is the better fix** — each level adds mandatory HAL
+requirements the device must genuinely satisfy, so this flag conceals a real
+incompatibility rather than resolving it. Acceptable to reach a first boot,
+never acceptable in a release.
+
+### 0012 — exclude the fingerprint HAL during bring-up
+
+`fingerprint/Android.bp` links `android.hardware.biometrics.fingerprint-V4-ndk`
+and `...common-V4-ndk`; the vintf fragment declares `<version>4</version>`. If
+Android 17 requires V5, `Fingerprint.cpp` and `Session.cpp` need rebuilding
+against the new interface with stubs for any added methods. Upstream
+`hardware/samsung/aidl/fingerprint` is also still on V4, so there is no
+reference implementation to copy.
+
+Dropping the service costs the fingerprint sensor **and nothing else** — the
+device boots and every other subsystem can be validated. Restore by removing
+this patch once the AIDL question is settled.
+
+Note AOSP keeps frozen AIDL versions available indefinitely, so `-V4-ndk`
+should still exist in an Android 17 tree. The risk is a compatibility-matrix
+minimum, not a missing library — this may well be unnecessary.
 
 ## Not addressed
 
