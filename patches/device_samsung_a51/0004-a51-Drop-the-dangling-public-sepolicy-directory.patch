@@ -1,6 +1,6 @@
-From 05275c8ec8fe192660a84274c8c90558d08e1843 Mon Sep 17 00:00:00 2001
+From 58181914ee0ee63b2bbc14ce01583cfc681c66b2 Mon Sep 17 00:00:00 2001
 From: dandysuper <a@b.c>
-Date: Sat, 8 Aug 2026 20:33:07 +0500
+Date: Sun, 9 Aug 2026 10:31:29 +0500
 Subject: [PATCH] a51: Drop the dangling public sepolicy directory
 
 sepolicy/public/property.te was removed when UdfpsHandler was dropped, and
@@ -12,10 +12,10 @@ points at nothing.
  1 file changed, 1 deletion(-)
 
 diff --git a/BoardConfig.mk b/BoardConfig.mk
-index c56a3ae..e6add38 100644
+index 599ee6a..606347e 100644
 --- a/BoardConfig.mk
 +++ b/BoardConfig.mk
-@@ -54,7 +54,6 @@ TARGET_ADDITIONAL_GRALLOC_10_USAGE_BITS := 0x2000U | 0x400000000LL
+@@ -53,7 +53,6 @@ TARGET_ADDITIONAL_GRALLOC_10_USAGE_BITS := 0x2000U | 0x400000000LL
  $(call soong_config_set,surfaceflinger,udfps_lib,//$(DEVICE_PATH):libudfps_extension.a51)
  
  ## SELinux
