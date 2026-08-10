@@ -487,21 +487,56 @@ check_fail
 CRAVE_SOONG_WORKAROUND="${CRAVE_SOONG_WORKAROUND:-1}"
 if [[ "${CRAVE_SOONG_WORKAROUND}" == "1" ]]; then
 
-  MEM_TOTAL_KB="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  MEM_TOTAL_GIB=$(( MEM_TOTAL_KB / 1024 / 1024 ))
-  if (( MEM_TOTAL_GIB < 4 )); then
-    echo "WARNING: could not read MemTotal; assuming 32 GiB"
-    MEM_TOTAL_GIB=32
-  fi
-  echo "=============================================="
-  echo "Worker memory : ${MEM_TOTAL_GIB} GiB total"
-  free -h 2>/dev/null || true
-  echo "nproc         : $(nproc --all)"
-  echo "=============================================="
+  # Read the CONTAINER limit, not the host's. /proc/meminfo inside a container
+  # reports the host: build 2026-08-10 logged "62 GiB total" and was still
+  # OOM-killed at GOMEMLIMIT=43GiB, because the enforced cgroup limit is far
+  # lower. cgroup v2 first, then v1, then /proc/meminfo as a last resort.
+  _read_mem_limit() {
+    local v
+    for f in /sys/fs/cgroup/memory.max \
+             /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+      [[ -r "$f" ]] || continue
+      v="$(cat "$f" 2>/dev/null)"
+      [[ "$v" == "max" || -z "$v" ]] && continue
+      # values >= 1 PiB mean "unlimited"; fall through to the host figure
+      (( v >= 1125899906842624 )) && continue
+      echo $(( v / 1024 / 1024 / 1024 )); return 0
+    done
+    awk '/^MemTotal:/{printf "%d", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo 0
+  }
 
-  # gctrace produced ~400 KB of noise in the last log. Off unless asked for.
+  MEM_LIMIT_GIB="$(_read_mem_limit)"
+  MEM_HOST_GIB=$(( $(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1024 / 1024 ))
+  if (( MEM_LIMIT_GIB < 4 )); then
+    echo "WARNING: could not read a memory limit; assuming 16 GiB"
+    MEM_LIMIT_GIB=16
+  fi
+  # If the cgroup reports the host figure, the real limit is unknown - the
+  # previous build proves it is well below. Budget conservatively.
+  if (( MEM_LIMIT_GIB >= MEM_HOST_GIB && MEM_HOST_GIB > 0 )); then
+    echo "NOTE: cgroup limit not readable (reported ${MEM_LIMIT_GIB} GiB = host)."
+    echo "      GOMEMLIMIT=43GiB was OOM-killed on a host reporting 62 GiB, so"
+    echo "      budgeting from a third of the host figure instead."
+    MEM_LIMIT_GIB=$(( MEM_HOST_GIB / 3 ))
+    (( MEM_LIMIT_GIB < 8 )) && MEM_LIMIT_GIB=8
+  fi
+
+  echo "=============================================="
+  echo "Host MemTotal   : ${MEM_HOST_GIB} GiB"
+  echo "Memory budget   : ${MEM_LIMIT_GIB} GiB  (basis for the ladder)"
+  cat /sys/fs/cgroup/memory.max 2>/dev/null | sed 's/^/cgroup v2 max : /' || true
+  cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null | sed 's/^/cgroup v1 max : /' || true
+  free -h 2>/dev/null || true
+  echo "nproc           : $(nproc --all)"
+  echo "=============================================="
+  MEM_TOTAL_GIB="${MEM_LIMIT_GIB}"
+
   SOONG_GCTRACE="${SOONG_GCTRACE:-0}"
-  SOONG_TIMEOUT="${SOONG_TIMEOUT:-2400}"
+  # 900s, not 2400. Build 2026-08-10 spent 42 minutes on one rung at
+  # "memory stall 2m34s/s" and was cancelled by a moderator - correctly, since
+  # a thrashing build makes shared infrastructure unusable for everyone else.
+  # Abandon a rung quickly and descend instead of grinding.
+  SOONG_TIMEOUT="${SOONG_TIMEOUT:-900}"
 
   do_soong() {
     ( sleep "${SOONG_TIMEOUT}"; pkill -9 -e soong_build || true ) &
@@ -516,7 +551,7 @@ if [[ "${CRAVE_SOONG_WORKAROUND}" == "1" ]]; then
   }
 
   # rung = "<percent of total RAM> <GOMAXPROCS>"
-  SOONG_RUNGS=("70 8" "50 6" "35 4" "25 2" "18 2")
+  SOONG_RUNGS=("60 4" "40 3" "28 2" "20 2" "14 1")
   soong_ok=0
   rung_n=0
 
@@ -538,7 +573,7 @@ if [[ "${CRAVE_SOONG_WORKAROUND}" == "1" ]]; then
     # Two attempts per rung, not four. soong_build resumes incrementally, so a
     # second try can finish work the first started - but a third at unchanged
     # settings only burns queue time.
-    if do_soong || do_soong; then
+    if do_soong; then
       soong_ok=1
       notify_send "Soong succeeded at rung ${rung_n} (${lim}GiB / ${procs} procs)."
       echo ">>> Soong succeeded at rung ${rung_n}"
